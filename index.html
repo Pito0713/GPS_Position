@@ -1,0 +1,3652 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPS 定位 // SYS</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── DESIGN TOKENS ─────────────────────────────────────────────── */
+      :root {
+        --panel-zoom: 1;
+        --bg:       #080808;
+        --bg2:      #0d0d0d;
+        --bg3:      #111;
+        --line:     #f0f0f0;
+        --line2:    rgba(240,240,240,.15);
+        --dim:      #333;
+        --muted:    #555;
+        --mid:      #888;
+        --hi:       #bbb;
+        --bright:   #e8e8e8;
+        --white:    #f0f0f0;
+        --accent:   #d4d4d4;
+        --active:   #ffffff;
+        --ok:       #aaa;
+        --err:      #666;
+        --warn:     #999;
+        --panel-w:  300px;
+        --mono:     'Share Tech Mono', monospace;
+        --display:  'Orbitron', sans-serif;
+        --r:        2px;
+      }
+
+      /* ── RESET ─────────────────────────────────────────────────────── */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--hi); font-family: var(--mono); font-size: 11px; }
+      ::-webkit-scrollbar { width: 3px; }
+      ::-webkit-scrollbar-track { background: var(--bg2); }
+      ::-webkit-scrollbar-thumb { background: var(--dim); }
+
+      /* ── GRID BACKGROUND ───────────────────────────────────────────── */
+      body::before {
+        content: '';
+        position: fixed; inset: 0; z-index: 0; pointer-events: none;
+        background-image:
+          linear-gradient(rgba(240,240,240,.08) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(240,240,240,.08) 1px, transparent 1px);
+        background-size: 40px 40px;
+        opacity: 0.4;
+      }
+
+      /* ── SCAN LINE OVERLAY ─────────────────────────────────────────── */
+      body::after {
+        content: '';
+        position: fixed; inset: 0; z-index: 0; pointer-events: none;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent, transparent 2px,
+          rgba(0,0,0,.15) 2px, rgba(0,0,0,.15) 4px
+        );
+      }
+
+      /* ── LAYOUT ────────────────────────────────────────────────────── */
+      /* ── TOP BAR ─────────────────────────────────────────────────── */
+      #top-bar {
+        position: fixed; top: 0; left: 0; right: 0; z-index: 9500;
+        height: 38px;
+        background: var(--bg); border-bottom: 2px solid #f0f0f0;
+        display: flex; align-items: center;
+        padding: 0 14px; gap: 10px;
+        font-family: var(--mono); font-size: 9px;
+      }
+      #top-bar::after {
+        content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px;
+        background: linear-gradient(90deg, transparent, #f0f0f0, transparent);
+      }
+      .tb-logo {
+        font-family: var(--display); font-size: 10px; font-weight: 900;
+        color: var(--white); letter-spacing: .18em;
+        display: flex; align-items: center; gap: 7px;
+        white-space: nowrap; padding-right: 10px;
+        border-right: 1px solid var(--line2);
+      }
+      .tb-status { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+      #tb-st { color: var(--muted); letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #tb-sr { font-size: 8px; color: var(--dim); font-style: italic; white-space: nowrap; }
+      .tb-sep { width: 1px; height: 16px; background: var(--line2); flex-shrink: 0; }
+      .tb-btns { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+      .tb-btn {
+        padding: 4px 11px; border-radius: var(--r);
+        border: 1px solid var(--line2); cursor: pointer;
+        font-family: var(--mono); font-size: 9px;
+        letter-spacing: .08em; text-transform: uppercase;
+        background: transparent; color: var(--hi);
+        transition: all .12s; white-space: nowrap; line-height: 1;
+      }
+      .tb-btn:hover:not(:disabled) { border-color: var(--white); color: var(--white); background: rgba(255,255,255,.07); }
+      .tb-btn:disabled { opacity: .25; cursor: not-allowed; }
+      .tb-btn.tb-primary { background: var(--white); color: var(--bg); border-color: var(--white); }
+      .tb-btn.tb-primary:hover:not(:disabled) { background: var(--bright); }
+
+      #app { display: flex; height: calc(100vh - 38px); margin-top: 38px; position: relative; z-index: 1; }
+      #panel {
+        width: var(--panel-w); min-width: var(--panel-w);
+        background: var(--bg2);
+        display: flex; flex-direction: column;
+        overflow: hidden; z-index: 10;
+        position: relative;
+        zoom: var(--panel-zoom);
+      }
+
+      #map-wrap { flex: 1; position: relative; min-height: 0; }
+      #map { width: 100%; height: 100%; min-height: 400px; }
+
+      /* ── DOT indicator ─────────────────────────────────────────────── */
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+      .logo-dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: var(--white); box-shadow: 0 0 8px var(--white);
+        animation: pulse 2s ease-in-out infinite; flex-shrink: 0;
+      }
+      .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+      .dot.on   { background: var(--white); box-shadow: 0 0 6px var(--white); animation: pulse 3s infinite; }
+      .dot.warn { background: var(--mid);   box-shadow: 0 0 6px var(--mid); }
+
+      /* ── PANEL BODY ────────────────────────────────────────────────── */
+      #pb { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+      /* ── SECTION ───────────────────────────────────────────────────── */
+      .sec { display: flex; flex-direction: column; gap: 5px; }
+      .sec-t {
+        font-size: 8px; letter-spacing: 0.2em; text-transform: uppercase;
+        color: var(--hi); padding-bottom: 4px;
+        border-bottom: 1px solid var(--line2);
+        display: flex; align-items: center; justify-content: space-between;
+      }
+      .sec-t::before { content: '//'; margin-right: 6px; color: var(--dim); }
+      .badge {
+        background: var(--bg); border: 1px solid rgba(240,240,240,.4);
+        padding: 1px 5px; border-radius: var(--r);
+        font-size: 8px; color: var(--white);
+        letter-spacing: 0.05em;
+      }
+
+      /* ── INPUTS ─────────────────────────────────────────────────────── */
+      input[type=text], input[type=number] {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid var(--line2);
+        color: var(--hi); font-family: var(--mono); font-size: 11px;
+        padding: 6px 8px; border-radius: var(--r);
+        outline: none; transition: border-color .15s;
+        letter-spacing: 0.03em;
+      }
+      input:focus { border-color: var(--mid); }
+      input::placeholder { color: var(--muted); }
+      .ir { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+      label { font-size: 8px; color: var(--hi); letter-spacing: 0.1em; text-transform: uppercase; display: block; margin-bottom: 2px; }
+
+      /* ── BUTTONS ─────────────────────────────────────────────────────── */
+      .btn {
+        padding: 7px 10px; border-radius: var(--r);
+        border: 1px solid var(--line2);
+        cursor: pointer; font-family: var(--mono); font-size: 10px;
+        font-weight: 400; letter-spacing: 0.08em;
+        transition: all .12s; display: flex;
+        align-items: center; justify-content: center; gap: 5px;
+        width: 100%; text-transform: uppercase;
+        position: relative; overflow: hidden;
+      }
+      .btn::after {
+        content: ''; position: absolute;
+        inset: 0; opacity: 0;
+        background: rgba(255,255,255,.05);
+        transition: opacity .12s;
+      }
+      .btn:hover::after { opacity: 1; }
+      .btn:active { transform: scale(.98); }
+      .btn:disabled { opacity: .25; cursor: not-allowed; transform: none; }
+
+      .bp { background: var(--white); color: var(--bg); border-color: var(--white); }
+      .bp:hover:not(:disabled) { background: var(--bright); }
+      .bd { background: transparent; color: var(--white); border-color: var(--white); }
+      .bd:hover:not(:disabled) { background: rgba(255,255,255,.1); border-color: var(--white); color: var(--white); }
+      .bs { background: var(--hi); color: var(--bg); border-color: var(--hi); }
+      .bs:hover:not(:disabled) { background: var(--white); }
+      .bg { background: transparent; color: var(--hi); border-color: rgba(240,240,240,.5); }
+      .bg:hover:not(:disabled) { border-color: var(--white); color: var(--white); background: rgba(255,255,255,.07); }
+      .bw { background: rgba(255,255,255,.2); color: var(--white); border-color: var(--white); }
+      .bw:hover:not(:disabled) { background: rgba(255,255,255,.35); }
+      .br2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+      .br3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+
+      /* ── TABS ─────────────────────────────────────────────────────── */
+      .tabs {
+        display: flex; gap: 0;
+        border: 1px solid var(--line2);
+        border-radius: var(--r); overflow: hidden;
+      }
+      .tab {
+        flex: 1; padding: 6px 3px; text-align: center;
+        cursor: pointer; font-size: 8px; color: var(--hi);
+        font-family: var(--mono); letter-spacing: 0.1em;
+        text-transform: uppercase; border: none;
+        background: var(--bg); transition: all .12s;
+        border-right: 2px solid #f0f0f0;
+      }
+      .tab:last-child { border-right: none; }
+      .tab.active { background: var(--white); color: var(--bg); font-weight: 700; }
+      .tab:not(.active):hover { background: rgba(255,255,255,.08); color: var(--white); }
+
+      /* ── 路線 LIST ─────────────────────────────────────────────────── */
+      #rl {
+        max-height: 88px; overflow-y: auto;
+        border: 1px solid var(--line2);
+        background: var(--bg);
+      }
+      .ri {
+        display: flex; align-items: center; gap: 5px;
+        padding: 4px 7px; border-bottom: 1px solid var(--line2);
+        font-size: 9px;
+      }
+      .ri:last-child { border-bottom: none; }
+      .rin {
+        width: 14px; height: 14px; border-radius: 50%;
+        background: var(--white); color: var(--bg);
+        font-size: 7px; font-weight: 700; font-family: var(--display);
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      }
+      .ric { flex: 1; color: var(--hi); font-size: 9px; }
+      .ri-dwell { width: 46px; flex-shrink: 0; }
+      .ri-dwell input {
+        width: 100%; background: var(--bg3); border: 1px solid var(--line2);
+        color: var(--hi); font-family: var(--mono); font-size: 9px;
+        padding: 2px 4px; border-radius: var(--r); text-align: center; outline: none;
+      }
+      .ri-dwell-label { font-size: 7px; color: var(--muted); text-align: center; margin-top: 1px; }
+      .rid { cursor: pointer; color: var(--dim); font-size: 10px; flex-shrink: 0; }
+      .rid:hover { color: var(--hi); }
+      .re { padding: 10px; text-align: center; color: var(--hi); font-size: 9px; font-style: italic; }
+
+      /* ── SLIDER ─────────────────────────────────────────────────────── */
+      .sw { display: flex; align-items: center; gap: 7px; }
+      .sw input[type=range] {
+        flex: 1; -webkit-appearance: none;
+        height: 1px; background: var(--dim);
+        border-radius: 1px; padding: 0; border: none;
+      }
+      .sw input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 11px; height: 11px;
+        border-radius: 50%; background: #fff; cursor: pointer;
+        box-shadow: 0 0 4px rgba(255,255,255,.6);
+      }
+      .sv { width: 52px; text-align: right; font-size: 9px; color: var(--hi); flex-shrink: 0; }
+
+      /* ── SPEED PRESETS ─────────────────────────────────────────────── */
+      .spd-presets { display: flex; gap: 4px; }
+      .spd-btn {
+        flex: 1; padding: 5px 2px;
+        border: 1px solid rgba(240,240,240,.4); background: var(--bg);
+        color: var(--hi); font-family: var(--mono); font-size: 8px;
+        cursor: pointer; text-align: center; border-radius: var(--r);
+        transition: all .12s; line-height: 1.4; text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .spd-btn:hover { border-color: var(--white); color: var(--white); background: rgba(255,255,255,.07); }
+      .spd-btn.active { background: var(--white); color: var(--bg); border-color: var(--white); }
+      .spd-icon { display: block; font-size: 12px; margin-bottom: 1px; }
+      .spd-val  { display: block; font-size: 7px; opacity: .7; }
+
+      /* ── LOOP ROW ─────────────────────────────────────────────────── */
+      .loop-row { display: flex; align-items: center; gap: 6px; }
+      .loop-label { font-size: 8px; color: var(--hi); white-space: nowrap; letter-spacing: 0.05em; text-transform: uppercase; }
+
+      /* ── 步驟 INFO ─────────────────────────────────────────────────── */
+      #si {
+        font-size: 9px; color: var(--hi); padding: 5px 7px;
+        background: var(--bg); border: 1px solid var(--line2);
+        border-radius: var(--r); line-height: 1.7; min-height: 26px;
+        letter-spacing: 0.03em;
+      }
+
+      /* ── LIVE SPEED ─────────────────────────────────────────────────── */
+      #lsw {
+        display: none; align-items: center; gap: 6px;
+        padding: 4px 7px; background: var(--bg);
+        border: 1px solid var(--line2); border-radius: var(--r);
+      }
+      #lsw input[type=range] {
+        flex: 1; -webkit-appearance: none; height: 1px;
+        background: var(--dim); padding: 0; border: none;
+      }
+      #lsw input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 10px; height: 10px;
+        border-radius: 50%; background: var(--hi); cursor: pointer;
+      }
+      .lsb { font-size: 9px; color: var(--hi); min-width: 46px; white-space: nowrap; }
+      .lsb.changed { color: var(--white); }
+
+      /* ── PREVIEW TOGGLE ─────────────────────────────────────────────── */
+      .ptgl { display: flex; align-items: center; gap: 6px; font-size: 9px; color: var(--muted); cursor: pointer; letter-spacing: 0.04em; }
+      .ptgl input { width: auto; cursor: pointer; accent-color: var(--white); }
+
+      /* ── SAVED LOCATIONS ────────────────────────────────────────────── */
+      #saved-list { max-height: 96px; overflow-y: auto; border: 1px solid var(--line2); background: var(--bg); }
+      .sv-item { display: flex; align-items: center; gap: 5px; padding: 4px 7px; border-bottom: 1px solid var(--line2); }
+      .sv-item:last-child { border-bottom: none; }
+      .sv-name { flex: 1; color: var(--white); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px; }
+      .sv-name:hover { color: var(--white); }
+      .sv-coord { font-size: 8px; color: var(--muted); min-width: 100px; }
+      .sv-del { cursor: pointer; color: var(--dim); font-size: 10px; padding: 0 2px; }
+      .sv-del:hover { color: var(--hi); }
+      .sv-empty { padding: 10px; text-align: center; color: var(--muted); font-size: 9px; font-style: italic; }
+      .save-row { display: grid; grid-template-columns: 1fr auto; gap: 5px; }
+
+      /* ── KEYBOARD FLOAT PANEL ────────────────────────────────────── */
+      #kb-float {
+        position: absolute; bottom: 14px; right: 14px;
+        z-index: 1000; width: 186px;
+        background: rgba(8,8,8,.55);
+        border: 1px solid rgba(240,240,240,.18);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        display: none; flex-direction: column;
+      }
+      #kb-float.kbf-open { display: flex; }
+      #kb-float-hdr {
+        display: flex; align-items: center; gap: 6px;
+        padding: 7px 9px;
+        border-bottom: 1px solid rgba(240,240,240,.12);
+        flex-shrink: 0;
+      }
+      #kb-float-title {
+        font-family: var(--display); font-size: 8px; font-weight: 700;
+        color: var(--hi); letter-spacing: .15em; text-transform: uppercase;
+        flex: 1;
+      }
+      #kb-float-title::before { content: '// '; color: rgba(240,240,240,.3); font-family: var(--mono); font-weight: 400; }
+      .kb-active-badge {
+        display: inline-block; padding: 1px 5px;
+        font-size: 7px; letter-spacing: 0.12em;
+        border: 1px solid rgba(240,240,240,.3); color: var(--muted);
+        border-radius: var(--r); text-transform: uppercase;
+      }
+      .kb-active-badge.on { border-color: var(--white); color: var(--white); background: rgba(255,255,255,.1); }
+      .kbf-ctrl {
+        background: none; border: 1px solid rgba(240,240,240,.18);
+        color: rgba(240,240,240,.4); cursor: pointer; font-family: var(--mono);
+        font-size: 9px; padding: 1px 6px; border-radius: var(--r);
+        line-height: 1; transition: all .12s;
+      }
+      .kbf-ctrl:hover { color: var(--white); border-color: rgba(240,240,240,.6); }
+      #kb-float-body { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+      #kb-float.kbf-collapsed #kb-float-body { display: none; }
+
+      .kb-grid {
+        display: grid; grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+      }
+      .kb-btn {
+        aspect-ratio: 1; display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        border: 1px solid rgba(240,240,240,.25);
+        background: rgba(255,255,255,.04);
+        color: var(--hi); font-size: 14px; border-radius: var(--r);
+        cursor: pointer; transition: all .1s; user-select: none;
+        font-family: var(--mono); gap: 1px;
+      }
+      .kb-btn .kb-key { font-size: 7px; color: rgba(240,240,240,.45); letter-spacing: 0.05em; }
+      .kb-btn:hover { border-color: rgba(240,240,240,.7); color: var(--white); background: rgba(255,255,255,.1); }
+      .kb-btn.pressed { background: rgba(255,255,255,.85); color: var(--bg); border-color: var(--white); }
+      .kb-center { background: transparent; border-color: rgba(240,240,240,.12); }
+      .kb-step-wrap { display: flex; align-items: center; gap: 6px; }
+      .kb-step-lbl { font-size: 8px; color: rgba(240,240,240,.5); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+      .kb-step-val { font-size: 9px; color: var(--hi); min-width: 34px; text-align: right; }
+
+      /* ── RW INFO ────────────────────────────────────────────────────── */
+      .rw-info {
+        font-size: 9px; color: var(--hi); padding: 4px 7px;
+        background: var(--bg); border: 1px solid var(--line2);
+        border-radius: var(--r); min-height: 22px; line-height: 1.5;
+        letter-spacing: 0.03em;
+      }
+
+      /* ── LOG FLOAT PANEL ─────────────────────────────────────────────── */
+      #log-float {
+        position: absolute; bottom: 14px; left: 14px;
+        z-index: 1000; width: 290px;
+        background: rgba(8,8,8,.55);
+        border: 1px solid rgba(240,240,240,.18);
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        display: none; flex-direction: column;
+      }
+      #log-float.lf-open { display: flex; }
+      #log-float-hdr {
+        display: flex; align-items: center; gap: 6px;
+        padding: 7px 9px; border-bottom: 1px solid rgba(240,240,240,.12);
+        flex-shrink: 0;
+      }
+      #log-float-title {
+        font-family: var(--display); font-size: 8px; font-weight: 700;
+        color: var(--hi); letter-spacing: .15em; text-transform: uppercase; flex: 1;
+      }
+      #log-float-title::before { content: '// '; color: rgba(240,240,240,.3); font-family: var(--mono); font-weight: 400; }
+      #log-float-body { display: flex; flex-direction: column; }
+      #log-float.lf-collapsed #log-float-body { display: none; }
+      #log {
+        padding: 6px 9px; max-height: 200px; overflow-y: auto;
+        font-size: 9px; line-height: 1.7; color: var(--muted);
+        letter-spacing: 0.03em;
+      }
+      #log-float-foot {
+        padding: 5px 9px; border-top: 1px solid rgba(240,240,240,.1);
+      }
+      .lok { color: var(--hi); }
+      .ler { color: var(--mid); }
+      .lin { color: var(--mid); }
+      .lwa { color: var(--muted); }
+
+      /* ── DIVIDER ─────────────────────────────────────────────────────── */
+      .div { height: 1px; background: #f0f0f0; margin: 3px 0; opacity: .6; }
+
+      /* ── MAP CONTROLS ───────────────────────────────────────────────── */
+      #mc { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 4px; }
+      .mb {
+        background: rgba(8,8,8,.92);
+        border: 1px solid var(--line2);
+        color: var(--mid); width: 30px; height: 30px;
+        border-radius: var(--r); cursor: pointer; font-size: 12px;
+        display: flex; align-items: center; justify-content: center;
+        backdrop-filter: blur(8px); transition: all .12s;
+        font-family: var(--mono);
+      }
+      .mb:hover { border-color: var(--hi); color: var(--white); }
+      .mb.active { background: var(--white); color: var(--bg); border-color: var(--white); }
+
+      /* ── HUD ────────────────────────────────────────────────────────── */
+      #hud {
+        position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+        z-index: 1000;
+        background: rgba(8,8,8,.92); border: 1px solid var(--line2);
+        padding: 5px 14px; font-size: 10px;
+        display: flex; align-items: center; gap: 14px;
+        backdrop-filter: blur(8px); pointer-events: none;
+        transition: opacity .3s; letter-spacing: 0.05em;
+      }
+      #hud.hidden { opacity: 0; }
+      .hl { color: var(--muted); font-size: 7px; letter-spacing: 0.15em; text-transform: uppercase; }
+      .hv { color: #fff; font-family: var(--display); font-size: 10px; font-weight: 700; } font-family: var(--display); font-size: 10px; }
+
+      /* ── 路線 PROGRESS ─────────────────────────────────────────────── */
+      #rp {
+        position: absolute; bottom: 14px; right: 14px;
+        z-index: 1000; background: rgba(8,8,8,.92);
+        border: 1px solid var(--line2); padding: 9px 12px;
+        font-size: 9px; backdrop-filter: blur(8px);
+        min-width: 160px; display: none; letter-spacing: 0.05em;
+      }
+      #rp.active { display: block; }
+      .rpt {
+        font-family: var(--display); font-size: 8px; font-weight: 700;
+        color: var(--hi); margin-bottom: 4px; letter-spacing: 0.15em;
+        text-transform: uppercase; display: flex; align-items: center; gap: 6px;
+      }
+      .rp-pause-badge {
+        display: none; font-size: 7px; padding: 1px 4px;
+        border: 1px solid var(--dim); color: var(--mid);
+      }
+      .rp-pause-badge.show { display: inline-block; }
+      .rpb { height: 1px; background: var(--line2); margin: 5px 0; }
+      .rpf { height: 1px; background: var(--white); width: 0%; transition: width .8s linear; }
+      .rpi { color: var(--muted); }
+
+      /* ── TOAST ──────────────────────────────────────────────────────── */
+      #tw {
+        position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+        z-index: 9999; display: flex; flex-direction: column; gap: 4px; pointer-events: none;
+      }
+      .t {
+        background: rgba(8,8,8,.95); border: 1px solid var(--line2);
+        padding: 6px 14px; font-size: 9px; letter-spacing: 0.08em;
+        animation: fadeIn .15s ease; white-space: nowrap;
+        text-transform: uppercase; font-family: var(--mono);
+      }
+      .t.ok   { border-color: var(--hi); color: var(--white); }
+      .t.err  { border-color: var(--dim); color: var(--mid); }
+      .t.info { border-color: var(--line2); color: var(--muted); }
+      @keyframes fadeIn { from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)} }
+
+      /* ── MAP OVERRIDES ──────────────────────────────────────────────── */
+      .leaflet-container { background: #000; }
+      .leaflet-tile { }
+      .leaflet-control-zoom { border: 1px solid var(--line2) !important; }
+      .leaflet-control-zoom a { background: var(--bg2) !important; color: var(--mid) !important; border-bottom: 1px solid var(--line2) !important; }
+      .leaflet-control-zoom a:hover { background: var(--bg3) !important; color: var(--white) !important; }
+      .leaflet-popup-content-wrapper { background: var(--bg2) !important; border: 1px solid var(--line2) !important; color: var(--hi) !important; font-family: var(--mono) !important; font-size: 10px !important; box-shadow: none !important; border-radius: var(--r) !important; }
+      .leaflet-popup-tip { background: var(--bg2) !important; }
+
+      /* ── PRESETS ────────────────────────────────────────────────────── */
+      .pg { display: flex; flex-wrap: wrap; gap: 3px; }
+      .pb2 {
+        background: var(--bg); color: var(--hi);
+        border: 1px solid rgba(240,240,240,.4);
+        padding: 3px 7px; cursor: pointer;
+        font-family: var(--mono); font-size: 8px;
+        letter-spacing: 0.05em; transition: all .12s;
+        border-radius: var(--r);
+      }
+      .pb2:hover { border-color: var(--white); color: var(--white); background: rgba(255,255,255,.07); }
+
+      /* batch input */
+      #batch-input {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid rgba(240,240,240,.3);
+        color: var(--hi);
+        font-family: var(--mono);
+        font-size: 10px;
+        padding: 6px 8px;
+        border-radius: var(--r);
+        outline: none;
+        resize: vertical;
+        min-height: 72px;
+        line-height: 1.7;
+        letter-spacing: 0.03em;
+        transition: border-color .15s;
+      }
+      #batch-input:focus { border-color: var(--white); }
+      #batch-input::placeholder { color: var(--muted); }
+      .batch-hint {
+        font-size: 8px; color: var(--muted);
+        letter-spacing: 0.04em; line-height: 1.6;
+        padding: 3px 1px;
+      }
+      #batch-result {
+        font-size: 9px; min-height: 14px;
+        padding: 2px 0; letter-spacing: 0.03em;
+      }
+      .batch-ok  { color: var(--hi); }
+      .batch-err { color: var(--mid); }
+
+
+      /* road routing */
+      .route-mode-tabs { display:flex; gap:0; border:1px solid rgba(240,240,240,.3); border-radius:var(--r); overflow:hidden; margin-bottom:4px; }
+      .route-mode-tab  { flex:1; padding:5px 3px; text-align:center; cursor:pointer; font-size:8px; color:var(--hi); font-family:var(--mono); letter-spacing:.1em; text-transform:uppercase; border:none; background:var(--bg); transition:all .12s; border-right:1px solid rgba(240,240,240,.2); }
+      .route-mode-tab:last-child { border-right:none; }
+      .route-mode-tab.active { background:var(--white); color:var(--bg); font-weight:700; }
+      .ors-key-wrap { display:flex; gap:5px; align-items:center; }
+      .ors-key-wrap input { flex:1; font-size:9px; letter-spacing:.03em; }
+      .ors-status { font-size:8px; color:var(--muted); padding:2px 0; letter-spacing:.04em; min-height:14px; }
+      .ors-status.ok  { color:var(--hi); }
+      .ors-status.err { color:var(--mid); }
+
+
+      /* cooldown */
+      #cooldown-bar {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 9998;
+        display: none;
+        flex-direction: column;
+        pointer-events: none;
+      }
+      #cooldown-track {
+        height: 2px;
+        background: rgba(240,240,240,.15);
+      }
+      #cooldown-fill {
+        height: 2px;
+        background: #f0f0f0;
+        width: 100%;
+        transition: width linear;
+      }
+      #cooldown-label {
+        position: fixed;
+        top: 6px; right: 14px;
+        z-index: 9999;
+        font-family: 'Orbitron', sans-serif;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.15em;
+        color: #f0f0f0;
+        pointer-events: none;
+        display: none;
+      }
+      #cooldown-label.warn {
+        color: #bbb;
+        animation: cdPulse .6s ease-in-out infinite;
+      }
+      @keyframes cdPulse {
+        0%,100% { opacity:1 } 50% { opacity:.4 }
+      }
+
+      /* ── MODALS ─────────────────────────────────────────────────── */
+      .modal-overlay {
+        position: fixed; inset: 0; z-index: 8000;
+        background: rgba(0,0,0,.78);
+        display: none; align-items: center; justify-content: center;
+        backdrop-filter: blur(4px);
+      }
+      .modal-overlay.open { display: flex; }
+      .modal-box {
+        background: var(--bg2);
+        border: 2px solid #f0f0f0;
+        width: 360px; max-height: 84vh;
+        display: flex; flex-direction: column;
+        position: relative;
+        zoom: var(--panel-zoom);
+      }
+      /* corner brackets on modal */
+      .modal-box::before, .modal-box::after {
+        content: ''; position: absolute;
+        width: 10px; height: 10px; border-color: #f0f0f0; border-style: solid;
+      }
+      .modal-box::before { top: 0; right: 0; border-width: 1px 1px 0 0; }
+      .modal-box::after  { bottom: 0; right: 0; border-width: 0 1px 1px 0; }
+      .modal-hdr {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px;
+        border-bottom: 2px solid #f0f0f0;
+        font-family: var(--display); font-size: 10px; font-weight: 700;
+        letter-spacing: 0.18em; text-transform: uppercase; color: var(--white);
+        flex-shrink: 0;
+      }
+      .modal-hdr::before { content: '//'; margin-right: 8px; color: var(--dim); font-family: var(--mono); font-weight: 400; font-size: 10px; }
+      .modal-close {
+        background: none; border: 1px solid rgba(240,240,240,.2); color: var(--dim);
+        cursor: pointer; font-size: 11px; padding: 2px 6px;
+        font-family: var(--mono); line-height: 1; border-radius: var(--r);
+        transition: all .12s;
+      }
+      .modal-close:hover { color: var(--white); border-color: var(--white); }
+      .modal-body {
+        flex: 1; overflow-y: auto; padding: 10px;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+
+      /* ── TIMER PANEL (fixed) ─────────────────────────────────────── */
+      #timer-panel {
+        position: absolute; top: 12px; right: 52px;
+        z-index: 1000; width: 252px;
+        background: rgba(8,8,8,.94);
+        border: 1px solid var(--line2);
+        backdrop-filter: blur(8px);
+        display: none; flex-direction: column;
+        max-height: calc(100vh - 120px);
+      }
+      #timer-panel.open { display: flex; }
+      #timer-panel-hdr {
+        display: flex; align-items: center; gap: 6px;
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--line2);
+        flex-shrink: 0;
+      }
+      #timer-panel-title {
+        font-family: var(--display); font-size: 8px; font-weight: 700;
+        color: var(--hi); letter-spacing: .18em; text-transform: uppercase; flex: 1;
+      }
+      #timer-panel-title::before { content: '// '; color: var(--dim); font-family: var(--mono); font-weight: 400; }
+      .tp-hdr-btn {
+        background: none; border: 1px solid rgba(240,240,240,.2);
+        color: var(--dim); cursor: pointer; font-family: var(--mono);
+        font-size: 9px; padding: 2px 6px; border-radius: var(--r);
+        transition: all .12s; line-height: 1;
+      }
+      .tp-hdr-btn:hover { color: var(--white); border-color: var(--white); }
+      #timer-list {
+        flex: 1; overflow-y: auto; padding: 8px;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+
+      /* ── TIMER CARDS ─────────────────────────────────────────────── */
+      .tc {
+        border: 1px solid var(--line2); background: var(--bg2);
+        border-radius: var(--r); padding: 8px;
+        display: flex; flex-direction: column; gap: 5px;
+        transition: border-color .25s;
+      }
+      .tc.tc-running { border-color: rgba(240,240,240,.45); }
+      .tc.tc-done { opacity: .5; }
+      .tc-toprow { display: flex; align-items: center; gap: 5px; }
+      .tc-id { font-size: 7px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; }
+      .tc-state { font-size: 7px; color: var(--dim); letter-spacing: .1em; }
+      .tc-del {
+        margin-left: auto; background: none; border: none;
+        cursor: pointer; color: var(--dim); font-size: 11px; padding: 0 2px;
+        line-height: 1;
+      }
+      .tc-del:hover { color: var(--hi); }
+      .tc-display {
+        font-family: var(--display); font-size: 28px; font-weight: 900;
+        color: var(--white); text-align: center; letter-spacing: .12em;
+        padding: 2px 0; line-height: 1;
+      }
+      .tc-display.tc-done-text { color: var(--dim); }
+      @keyframes tcPulse { 0%,100%{opacity:1}50%{opacity:.3} }
+      .tc-display.tc-ending { animation: tcPulse .5s ease-in-out infinite; color: var(--hi); }
+      .tc-loc-hint { font-size: 8px; color: var(--muted); text-align: center; letter-spacing: .06em; min-height: 11px; }
+      .tc-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+      .tc-inputs input { text-align: center; font-size: 12px; padding: 4px; }
+      .tc-sel {
+        width: 100%; background: var(--bg); border: 1px solid rgba(240,240,240,.25);
+        color: var(--hi); font-family: var(--mono); font-size: 9px;
+        padding: 4px 6px; border-radius: var(--r); outline: none;
+      }
+      .tc-empty {
+        text-align: center; color: var(--muted); font-size: 9px;
+        font-style: italic; padding: 14px 0; letter-spacing: .06em;
+      }
+
+      /* ── SETTINGS MODAL ──────────────────────────────────────────── */
+      .set-group { display: flex; flex-direction: column; gap: 8px; }
+      .set-group-title {
+        font-size: 7px; color: var(--muted); letter-spacing: .2em;
+        text-transform: uppercase; padding-bottom: 5px;
+        border-bottom: 1px solid var(--line2);
+      }
+      .set-group-title::before { content: '── '; color: var(--dim); }
+      .set-row { display: flex; flex-direction: column; gap: 3px; }
+      .set-row label { margin-bottom: 0; }
+      .set-hint { font-size: 8px; color: var(--dim); letter-spacing: .04em; }
+      .set-scale-wrap { display: flex; align-items: center; gap: 8px; }
+      .set-scale-wrap input[type=range] {
+        flex: 1; -webkit-appearance: none; height: 1px;
+        background: var(--dim); padding: 0; border: none;
+      }
+      .set-scale-wrap input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 11px; height: 11px;
+        border-radius: 50%; background: #fff; cursor: pointer;
+      }
+      .set-scale-val {
+        font-family: var(--display); font-size: 10px; font-weight: 700;
+        color: var(--white); min-width: 38px; text-align: right; letter-spacing: .05em;
+      }
+      .set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    </style>
+  </head>
+  <body>
+    <div id="tw"></div>
+    <div id="cooldown-bar">
+      <div id="cooldown-track"><div id="cooldown-fill"></div></div>
+    </div>
+    <div id="cooldown-label"></div>
+
+    <!-- ═══ SAVED LOCATIONS MODAL ═══ -->
+    <div
+      id="saved-modal"
+      class="modal-overlay"
+      onclick="if (event.target === this) closeSavedModal();"
+    >
+      <div class="modal-box">
+        <div class="modal-hdr">
+          已儲存位置
+          <span
+            class="badge"
+            id="saved-count"
+            style="font-family: var(--mono); font-size: 8px"
+            >0</span
+          >
+          <button class="modal-close" onclick="closeSavedModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div id="modal-saved-list">
+            <div class="sv-empty">// NO SAVED LOCATIONS</div>
+          </div>
+          <div class="div"></div>
+          <div
+            style="
+              font-size: 8px;
+              color: var(--muted);
+              letter-spacing: 0.08em;
+              text-transform: uppercase;
+            "
+          >
+            儲存目前座標
+          </div>
+          <div class="save-row">
+            <input
+              id="save-name"
+              type="text"
+              placeholder="位置名稱（選填）"
+              style="font-size: 9px"
+            />
+            <button
+              class="btn bs"
+              onclick="saveCurrentLoc()"
+              style="width: auto; padding: 6px 10px; font-size: 9px"
+            >
+              儲存
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ TOP BAR ═══ -->
+    <div id="top-bar">
+      <div class="tb-logo">
+        <div class="logo-dot"></div>
+        GPS 定位
+      </div>
+      <div class="tb-status">
+        <div class="dot" id="td"></div>
+        <div id="tb-st">離線 — 請啟動通道</div>
+        <div id="tb-sr"></div>
+      </div>
+      <div class="tb-sep"></div>
+      <div class="tb-btns">
+        <button class="tb-btn tb-primary" id="bst" onclick="startTunnel()">
+          ▶ 啟動通道
+        </button>
+        <button class="tb-btn" id="bsp" onclick="stopTunnel()" disabled>
+          ■ 停止
+        </button>
+        <button class="tb-btn" onclick="mountDDI()">⚙ 掛載 DDI</button>
+      </div>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" onclick="openSettingsModal()" title="設定">
+        設定
+      </button>
+    </div>
+
+    <!-- ═══ SETTINGS MODAL ═══ -->
+    <div
+      id="settings-modal"
+      class="modal-overlay"
+      onclick="if (event.target === this) closeSettingsModal();"
+    >
+      <div class="modal-box" style="width: 380px">
+        <div class="modal-hdr">
+          系統設定
+          <button class="modal-close" onclick="closeSettingsModal()">✕</button>
+        </div>
+        <div class="modal-body" style="gap: 14px">
+          <!-- 介面 -->
+          <div class="set-group">
+            <div class="set-group-title">介面</div>
+            <div class="set-row">
+              <label>面板字體縮放</label>
+              <div class="set-scale-wrap">
+                <input
+                  type="range"
+                  id="set-zoom"
+                  min="80"
+                  max="130"
+                  step="5"
+                  value="100"
+                  oninput="
+                    document.getElementById('set-zoom-val').textContent =
+                      this.value + '%';
+                    document.documentElement.style.setProperty(
+                      '--panel-zoom',
+                      this.value / 100,
+                    );
+                  "
+                />
+                <span class="set-scale-val" id="set-zoom-val">100%</span>
+              </div>
+              <div class="set-hint">
+                影響左側面板與彈窗的文字與元件大小（80%–130%）
+              </div>
+            </div>
+          </div>
+
+          <!-- 連線 -->
+          <div class="set-group">
+            <div class="set-group-title">連線</div>
+            <div class="set-row">
+              <label>後端 API Port</label>
+              <input
+                type="number"
+                id="set-port"
+                min="1024"
+                max="65535"
+                placeholder="7788"
+                style="font-size: 12px"
+              />
+              <div class="set-hint">
+                預設 7788，對應 gps_position.py 的監聽 port
+              </div>
+            </div>
+          </div>
+
+          <!-- 地圖 -->
+          <div class="set-group">
+            <div class="set-group-title">地圖預設視角</div>
+            <div class="set-grid2">
+              <div class="set-row">
+                <label>預設緯度</label>
+                <input
+                  type="number"
+                  id="set-map-lat"
+                  step="0.0001"
+                  placeholder="25.0330"
+                  style="font-size: 12px"
+                />
+              </div>
+              <div class="set-row">
+                <label>預設經度</label>
+                <input
+                  type="number"
+                  id="set-map-lng"
+                  step="0.0001"
+                  placeholder="121.5654"
+                  style="font-size: 12px"
+                />
+              </div>
+            </div>
+            <div class="set-row">
+              <label>預設縮放層級</label>
+              <input
+                type="number"
+                id="set-map-zoom"
+                min="1"
+                max="19"
+                placeholder="12"
+                style="font-size: 12px"
+              />
+              <div class="set-hint">僅影響開啟頁面時的初始視角</div>
+            </div>
+          </div>
+
+          <!-- 冷卻 -->
+          <div class="set-group">
+            <div class="set-group-title">冷卻計算參數</div>
+            <div class="set-grid2">
+              <div class="set-row">
+                <label>最小觸發距離 (m)</label>
+                <input
+                  type="number"
+                  id="set-cd-min"
+                  min="0"
+                  placeholder="100"
+                  style="font-size: 12px"
+                />
+              </div>
+              <div class="set-row">
+                <label>最長冷卻時間 (s)</label>
+                <input
+                  type="number"
+                  id="set-cd-max"
+                  min="0"
+                  placeholder="1800"
+                  style="font-size: 12px"
+                />
+              </div>
+            </div>
+            <div class="set-grid2">
+              <div class="set-row">
+                <label>步行速度基準 (m/s)</label>
+                <input
+                  type="number"
+                  id="set-cd-speed"
+                  step="0.001"
+                  placeholder="1.389"
+                  style="font-size: 12px"
+                />
+              </div>
+              <div class="set-row">
+                <label>緩衝倍數</label>
+                <input
+                  type="number"
+                  id="set-cd-buf"
+                  step="0.1"
+                  placeholder="1.5"
+                  style="font-size: 12px"
+                />
+              </div>
+            </div>
+            <div class="set-hint">
+              冷卻時間 ＝（距離 ÷ 速度）× 倍數，上限為最長冷卻時間
+            </div>
+          </div>
+
+          <div class="br2">
+            <button class="btn bp" onclick="applySettings()">套用設定</button>
+            <button class="btn bg" onclick="resetSettings()">
+              重設為預設值
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="app">
+      <!-- ═══ PANEL ═══ -->
+      <div id="panel">
+        <!-- Body -->
+        <div id="pb">
+          <!-- Mode tabs -->
+          <div class="sec">
+            <div class="sec-t">操作模式</div>
+            <div class="tabs">
+              <button
+                class="tab active"
+                id="tab-teleport"
+                onclick="setMode('teleport')"
+              >
+                傳送
+              </button>
+              <button class="tab" id="tab-route" onclick="setMode('route')">
+                路線
+              </button>
+              <button class="tab" id="tab-gpx" onclick="setMode('gpx')">
+                GPX
+              </button>
+              <button class="tab" id="tab-rw" onclick="setMode('rw')">
+                漫步
+              </button>
+            </div>
+          </div>
+
+          <!-- ── TELEPORT ── -->
+          <div id="mode-teleport" class="sec">
+            <div class="ir">
+              <div>
+                <label>緯度</label
+                ><input
+                  id="inp-lat"
+                  type="number"
+                  step="0.000001"
+                  placeholder="25.033000"
+                />
+              </div>
+              <div>
+                <label>經度</label
+                ><input
+                  id="inp-lng"
+                  type="number"
+                  step="0.000001"
+                  placeholder="121.565400"
+                />
+              </div>
+            </div>
+            <input
+              id="inp-search"
+              type="text"
+              placeholder="搜尋地點（按 Enter）"
+              style="font-size: 9px; letter-spacing: 0.05em"
+            />
+            <button class="btn bp" id="cd-tp-btn" onclick="teleport()">
+              ▶ 設定此位置
+            </button>
+            <button class="btn bd" onclick="clearLoc()" style="font-size: 9px">
+              ✕ 清除 — 還原真實 GPS
+            </button>
+            <div
+              style="
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 0;
+              "
+            >
+              <span
+                style="
+                  font-size: 8px;
+                  color: var(--muted);
+                  letter-spacing: 0.08em;
+                  text-transform: uppercase;
+                "
+                >冷卻模式</span
+              >
+              <select
+                id="cd-mode-sel"
+                onchange="setCdMode(this.value)"
+                style="
+                  background: var(--bg);
+                  border: 1px solid rgba(240, 240, 240, 0.3);
+                  color: var(--hi);
+                  font-family: var(--mono);
+                  font-size: 9px;
+                  padding: 3px 6px;
+                  border-radius: var(--r);
+                  outline: none;
+                  flex: 1;
+                "
+              >
+                <option value="distance" selected>依距離自動計算</option>
+                <option value="off">關閉冷卻</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- ── 路線 ── -->
+          <div id="mode-route" class="sec" style="display: none">
+            <!-- Route mode: manual / road routing -->
+            <div class="route-mode-tabs">
+              <button
+                class="route-mode-tab active"
+                id="rmt-manual"
+                onclick="setRoutingMode('manual')"
+              >
+                ✚ 手動點選
+              </button>
+              <button
+                class="route-mode-tab"
+                id="rmt-walk"
+                onclick="setRoutingMode('walk')"
+              >
+                🚶 步行路線
+              </button>
+              <button
+                class="route-mode-tab"
+                id="rmt-cycle"
+                onclick="setRoutingMode('cycle')"
+              >
+                🚲 騎車路線
+              </button>
+            </div>
+
+            <!-- ORS API key (shown when road routing active) -->
+            <div id="ors-key-section" style="display: none">
+              <label>ORS API Key</label>
+              <div class="ors-key-wrap">
+                <input
+                  id="ors-key"
+                  type="text"
+                  placeholder="ors API key（openrouteservice.org）"
+                  style="font-size: 9px"
+                />
+                <button
+                  class="btn bg"
+                  onclick="saveOrsKey()"
+                  style="width: auto; padding: 5px 8px; font-size: 8px"
+                >
+                  儲存
+                </button>
+              </div>
+              <div class="ors-status" id="ors-status">
+                // 輸入 API key 後點選地圖兩點即可規劃路線
+              </div>
+            </div>
+
+            <div class="sec-t">
+              路線點 <span class="badge" id="rc">0 點</span>
+            </div>
+            <div id="rl">
+              <div class="re">// 點擊 ✚ 後在地圖上點選路線點</div>
+            </div>
+            <div>
+              <label>速度</label>
+              <div class="sw">
+                <input
+                  type="range"
+                  id="spd"
+                  min="5"
+                  max="120"
+                  value="5"
+                  oninput="onSpdChange(this.value)"
+                />
+                <div class="sv"><span id="sv">5</span> km/h</div>
+              </div>
+            </div>
+            <div class="spd-presets">
+              <button
+                class="spd-btn active"
+                id="rspd-0"
+                onclick="setSpdPreset('route', 5, 0)"
+              >
+                <span class="spd-icon">🚶</span>漫步<span class="spd-val"
+                  >5 km/h</span
+                >
+              </button>
+              <button
+                class="spd-btn"
+                id="rspd-1"
+                onclick="setSpdPreset('route', 8, 1)"
+              >
+                <span class="spd-icon">🚶‍♂️</span>快走<span class="spd-val"
+                  >8 km/h</span
+                >
+              </button>
+              <button
+                class="spd-btn"
+                id="rspd-2"
+                onclick="setSpdPreset('route', 15, 2)"
+              >
+                <span class="spd-icon">🚲</span>騎車<span class="spd-val"
+                  >15 km/h</span
+                >
+              </button>
+            </div>
+            <div id="lsw">
+              <span
+                style="
+                  font-size: 8px;
+                  color: var(--muted);
+                  white-space: nowrap;
+                  letter-spacing: 0.08em;
+                  text-transform: uppercase;
+                "
+                >即時速度</span
+              >
+              <span class="lsb" id="lsb">5 km/h</span>
+              <input
+                type="range"
+                id="lss"
+                min="5"
+                max="120"
+                value="5"
+                oninput="onLiveSpd(this.value)"
+              />
+              <button
+                class="btn bg"
+                onclick="applyLiveSpd()"
+                style="width: auto; padding: 3px 7px; font-size: 8px"
+              >
+                套用
+              </button>
+            </div>
+            <div id="si">// 設定路線點後顯示插點資訊</div>
+            <label class="ptgl"
+              ><input type="checkbox" id="cpv" onchange="togglePreview()" />
+              顯示插點預覽</label
+            >
+            <div class="loop-row">
+              <span class="loop-label">循環</span>
+              <input
+                id="loops"
+                type="number"
+                min="0"
+                max="999"
+                value="1"
+                style="
+                  font-size: 10px;
+                  padding: 4px 6px;
+                  text-align: center;
+                  width: 55px;
+                "
+                title="0=∞"
+              />
+              <span class="loop-label">(0=無限)</span>
+            </div>
+            <div class="br3">
+              <button class="btn bs" id="brs" onclick="startRoute()">
+                ▶ 開始
+              </button>
+              <button class="btn bw" id="brp" onclick="pauseRoute()" disabled>
+                ⏸ 暫停
+              </button>
+              <button class="btn bd" id="bre" onclick="stopRoute()" disabled>
+                ■ 停止
+              </button>
+            </div>
+            <button
+              class="btn bg"
+              onclick="clearRoute()"
+              style="font-size: 9px"
+            >
+              ✕ 清除所有路線點
+            </button>
+
+            <!-- Batch input -->
+            <div class="sec-t" style="margin-top: 4px">批次輸入座標</div>
+            <div class="batch-hint">
+              每行一個點，支援格式：<br />
+              緯度, 經度　（34.5230, 134.8696）<br />
+              緯度 經度　 （空格分隔）
+            </div>
+            <textarea
+              id="batch-input"
+              placeholder="34.52304997, 134.86966945&#10;34.52304997, 134.99966945&#10;34.60304997, 134.99966945"
+            ></textarea>
+            <div id="batch-result"></div>
+            <div class="br2">
+              <button class="btn bs" onclick="batchImport()">▶ 匯入座標</button>
+              <button
+                class="btn bg"
+                onclick="batchClear()"
+                style="font-size: 9px"
+              >
+                ✕ 清除輸入
+              </button>
+            </div>
+          </div>
+
+          <!-- ── GPX ── -->
+          <div id="mode-gpx" class="sec" style="display: none">
+            <label>GPX 檔案</label>
+            <input
+              type="file"
+              id="gpx-file"
+              accept=".gpx"
+              style="font-size: 9px; padding: 5px 7px; letter-spacing: 0.04em"
+              onchange="loadGPX(this)"
+            />
+            <div
+              id="gpx-info"
+              style="
+                font-size: 9px;
+                color: var(--muted);
+                min-height: 14px;
+                letter-spacing: 0.03em;
+              "
+            ></div>
+            <div class="loop-row">
+              <span class="loop-label">循環</span>
+              <input
+                id="gpx-loops"
+                type="number"
+                min="0"
+                max="99"
+                value="1"
+                style="
+                  font-size: 10px;
+                  padding: 4px 6px;
+                  text-align: center;
+                  width: 55px;
+                "
+              />
+              <span class="loop-label">(0=無限)</span>
+            </div>
+            <div class="br3">
+              <button class="btn bs" id="bgp" onclick="playGPX()" disabled>
+                ▶ 播放
+              </button>
+              <button class="btn bw" id="bgpp" onclick="pauseRoute()" disabled>
+                ⏸
+              </button>
+              <button class="btn bd" onclick="stopRoute()">■ 停止</button>
+            </div>
+          </div>
+
+          <!-- ── RANDOM 步行 ── -->
+          <div id="mode-rw" class="sec" style="display: none">
+            <div class="sec-t">隨機漫步設定</div>
+            <div>
+              <label>中心點（當前虛擬位置）</label>
+              <div class="rw-info" id="rw-center">// 請先傳送到目標位置</div>
+            </div>
+            <div>
+              <label>漫步半徑（公尺）</label>
+              <input
+                id="rw-radius"
+                type="number"
+                min="50"
+                max="5000"
+                value="300"
+                oninput="updateRWCircle()"
+              />
+            </div>
+            <div>
+              <label>速度</label>
+              <div class="sw">
+                <input
+                  type="range"
+                  id="rw-spd"
+                  min="5"
+                  max="30"
+                  value="5"
+                  oninput="onRWSpdChange(this.value)"
+                />
+                <div class="sv"><span id="rw-sv">5</span> km/h</div>
+              </div>
+            </div>
+            <div class="spd-presets">
+              <button
+                class="spd-btn active"
+                id="wspd-0"
+                onclick="setSpdPreset('rw', 5, 0)"
+              >
+                <span class="spd-icon">🚶</span>漫步<span class="spd-val"
+                  >5 km/h</span
+                >
+              </button>
+              <button
+                class="spd-btn"
+                id="wspd-1"
+                onclick="setSpdPreset('rw', 8, 1)"
+              >
+                <span class="spd-icon">🚶‍♂️</span>快走<span class="spd-val"
+                  >8 km/h</span
+                >
+              </button>
+              <button
+                class="spd-btn"
+                id="wspd-2"
+                onclick="setSpdPreset('rw', 15, 2)"
+              >
+                <span class="spd-icon">🚲</span>騎車<span class="spd-val"
+                  >15 km/h</span
+                >
+              </button>
+            </div>
+            <div class="loop-row">
+              <span class="loop-label">循環</span>
+              <input
+                id="rw-loops"
+                type="number"
+                min="0"
+                max="99"
+                value="0"
+                style="
+                  font-size: 10px;
+                  padding: 4px 6px;
+                  text-align: center;
+                  width: 55px;
+                "
+              />
+              <span class="loop-label">(0=無限)</span>
+            </div>
+            <div class="br2">
+              <button class="btn bs" id="brws" onclick="startRW()">
+                ▶ 開始漫步
+              </button>
+              <button class="btn bd" id="brwe" onclick="stopRoute()" disabled>
+                ■ 停止
+              </button>
+            </div>
+            <button
+              class="btn bg"
+              id="brwp"
+              onclick="pauseRoute()"
+              disabled
+              style="font-size: 9px"
+            >
+              ⏸ 暫停 / 繼續
+            </button>
+            <div
+              id="rw-status"
+              style="
+                font-size: 9px;
+                color: var(--muted);
+                padding: 2px 0;
+                letter-spacing: 0.03em;
+                min-height: 14px;
+              "
+            ></div>
+          </div>
+
+          <div class="div"></div>
+
+        </div>
+        <!-- /pb -->
+      </div>
+      <!-- /panel -->
+
+      <!-- ═══ MAP ═══ -->
+      <div id="map-wrap">
+        <div id="map"></div>
+        <div id="mc">
+          <button class="mb" title="Fly to spoof position" onclick="flyS()">
+            ◎
+          </button>
+          <button class="mb" title="Fly to real position" onclick="flyR()">
+            ⊕
+          </button>
+          <button
+            class="mb"
+            id="brc"
+            title="Add route point"
+            onclick="toggleRC()"
+          >
+            ✚
+          </button>
+          <button
+            class="mb"
+            title="已儲存位置"
+            onclick="openSavedModal()"
+            style="font-size: 11px"
+          >
+            📂
+          </button>
+          <button
+            class="mb"
+            id="btn-timer"
+            title="計時器"
+            onclick="toggleTimerPanel()"
+            style="font-size: 11px"
+          >
+            ⏱
+          </button>
+          <button
+            class="mb"
+            id="btn-kb"
+            title="鍵盤控制"
+            onclick="toggleKbFloat()"
+            style="font-size: 12px"
+          >
+            ⌨
+          </button>
+          <button
+            class="mb"
+            id="btn-log"
+            title="系統日誌"
+            onclick="toggleLogFloat()"
+            style="font-size:9px;letter-spacing:.02em;font-family:var(--mono)"
+          >
+            LOG
+          </button>
+        </div>
+
+        <!-- Log float panel -->
+        <div id="log-float">
+          <div id="log-float-hdr">
+            <span id="log-float-title">系統日誌</span>
+            <span class="badge" id="lc" style="font-family:var(--mono)">0</span>
+            <button class="kbf-ctrl" id="log-collapse-btn" onclick="toggleLogCollapse()" title="收合">—</button>
+            <button class="kbf-ctrl" onclick="toggleLogFloat()" title="關閉">✕</button>
+          </div>
+          <div id="log-float-body">
+            <div id="log"></div>
+            <div id="log-float-foot">
+              <button class="btn bg" onclick="clearLog()"
+                style="font-size:8px;letter-spacing:.1em;background:rgba(255,255,255,.05);border-color:rgba(240,240,240,.2)">
+                清除日誌
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Keyboard float panel -->
+        <div id="kb-float">
+          <div id="kb-float-hdr">
+            <span id="kb-float-title">鍵盤</span>
+            <span class="kb-active-badge" id="kb-badge">OFF</span>
+            <button
+              class="kbf-ctrl"
+              id="kb-collapse-btn"
+              onclick="toggleKbCollapse()"
+              title="收合"
+            >
+              —
+            </button>
+            <button class="kbf-ctrl" onclick="toggleKbFloat()" title="關閉">
+              ✕
+            </button>
+          </div>
+          <div id="kb-float-body">
+            <div class="kb-grid">
+              <div></div>
+              <button class="kb-btn" id="kb-n" title="↑ North">
+                ↑<span class="kb-key">W/↑</span>
+              </button>
+              <div></div>
+              <button class="kb-btn" id="kb-w" title="← West">
+                ←<span class="kb-key">A/←</span>
+              </button>
+              <div
+                class="kb-btn kb-center"
+                style="font-size: 8px; color: rgba(240, 240, 240, 0.3)"
+              >
+                ◎
+              </div>
+              <button class="kb-btn" id="kb-e" title="→ East">
+                →<span class="kb-key">D/→</span>
+              </button>
+              <div></div>
+              <button class="kb-btn" id="kb-s" title="↓ South">
+                ↓<span class="kb-key">S/↓</span>
+              </button>
+              <div></div>
+            </div>
+            <div class="kb-step-wrap">
+              <span class="kb-step-lbl">步長</span>
+              <input
+                type="range"
+                id="kb-step-slider"
+                min="1"
+                max="100"
+                value="5"
+                oninput="kbUpdateStep(this.value)"
+                style="
+                  flex: 1;
+                  -webkit-appearance: none;
+                  height: 1px;
+                  background: rgba(240, 240, 240, 0.25);
+                  padding: 0;
+                  border: none;
+                "
+              />
+              <span class="kb-step-val" id="kb-step-val">5m</span>
+            </div>
+            <button
+              class="btn bg"
+              onclick="toggleKb()"
+              id="kb-toggle-btn"
+              style="
+                font-size: 8px;
+                letter-spacing: 0.1em;
+                background: rgba(255, 255, 255, 0.06);
+                border-color: rgba(240, 240, 240, 0.25);
+              "
+            >
+              啟用鍵盤
+            </button>
+          </div>
+        </div>
+        <div id="hud" class="hidden">
+          <div>
+            <div class="hl">緯度</div>
+            <div class="hv" id="hudlat">—</div>
+          </div>
+          <div>
+            <div class="hl">經度</div>
+            <div class="hv" id="hudlng">—</div>
+          </div>
+          <div>
+            <div class="hl">狀態</div>
+            <div class="hv" id="hudst">—</div>
+          </div>
+        </div>
+        <!-- Timer panel -->
+        <div id="timer-panel">
+          <div id="timer-panel-hdr">
+            <span id="timer-panel-title">計時器</span>
+            <button class="tp-hdr-btn" onclick="addTimer()">+ 新增</button>
+            <button class="tp-hdr-btn" onclick="toggleTimerPanel()">✕</button>
+          </div>
+          <div id="timer-list"><div class="tc-empty">// 尚無計時器</div></div>
+        </div>
+
+        <div id="rp">
+          <div class="rpt">
+            路線 <span class="rp-pause-badge" id="rp-pause">已暫停</span>
+          </div>
+          <div class="rpb"><div class="rpf" id="rpf"></div></div>
+          <div class="rpi" id="rpi">—</div>
+        </div>
+      </div>
+    </div>
+    <!-- /app -->
+
+    <script>
+      // ════════════════════════════════════════════════════════════
+      // CONSTANTS
+      // ════════════════════════════════════════════════════════════
+      // ════════════════════════════════════════════════════════════
+      // SETTINGS — 所有使用者可設定值集中管理
+      // ════════════════════════════════════════════════════════════
+      const SETTINGS_KEY = "gps_settings_v1";
+      const SAVE_KEY = "gps_saved_v1";
+
+      const DEFAULT_SETTINGS = {
+        panelZoom: 1.0, // 面板縮放倍率（0.8 ~ 1.3）
+        apiPort: 7788, // 後端 API port
+        mapLat: 25.033, // 地圖預設中心緯度
+        mapLng: 121.5654, // 地圖預設中心經度
+        mapZoom: 12, // 地圖預設縮放層級
+        cdMinDist: 100, // 冷卻最小觸發距離（公尺）
+        cdMaxSecs: 1800, // 冷卻最長時間（秒）
+        cdWalkSpd: 1.389, // 步行速度基準（m/s，對應 5 km/h）
+        cdBuffer: 1.5, // 冷卻緩衝倍數
+      };
+
+      let S = { ...DEFAULT_SETTINGS };
+      let API = `http://localhost:${S.apiPort}`;
+
+      function _loadSettings() {
+        try {
+          S = {
+            ...DEFAULT_SETTINGS,
+            ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
+          };
+        } catch {}
+        API = `http://localhost:${S.apiPort}`;
+      }
+      function _applyZoom() {
+        document.documentElement.style.setProperty("--panel-zoom", S.panelZoom);
+      }
+      function openSettingsModal() {
+        _loadSettings();
+        // 填入目前值
+        document.getElementById("set-zoom").value = Math.round(
+          S.panelZoom * 100,
+        );
+        document.getElementById("set-zoom-val").textContent =
+          Math.round(S.panelZoom * 100) + "%";
+        document.getElementById("set-port").value = S.apiPort;
+        document.getElementById("set-map-lat").value = S.mapLat;
+        document.getElementById("set-map-lng").value = S.mapLng;
+        document.getElementById("set-map-zoom").value = S.mapZoom;
+        document.getElementById("set-cd-min").value = S.cdMinDist;
+        document.getElementById("set-cd-max").value = S.cdMaxSecs;
+        document.getElementById("set-cd-speed").value = S.cdWalkSpd;
+        document.getElementById("set-cd-buf").value = S.cdBuffer;
+        document.getElementById("settings-modal").classList.add("open");
+      }
+      function closeSettingsModal() {
+        document.getElementById("settings-modal").classList.remove("open");
+      }
+      function applySettings() {
+        S.panelZoom =
+          parseFloat(document.getElementById("set-zoom").value) / 100 || 1;
+        S.apiPort = parseInt(document.getElementById("set-port").value) || 7788;
+        S.mapLat =
+          parseFloat(document.getElementById("set-map-lat").value) || 25.033;
+        S.mapLng =
+          parseFloat(document.getElementById("set-map-lng").value) || 121.5654;
+        S.mapZoom =
+          parseInt(document.getElementById("set-map-zoom").value) || 12;
+        S.cdMinDist =
+          parseFloat(document.getElementById("set-cd-min").value) || 100;
+        S.cdMaxSecs =
+          parseFloat(document.getElementById("set-cd-max").value) || 1800;
+        S.cdWalkSpd =
+          parseFloat(document.getElementById("set-cd-speed").value) || 1.389;
+        S.cdBuffer =
+          parseFloat(document.getElementById("set-cd-buf").value) || 1.5;
+        API = `http://localhost:${S.apiPort}`;
+        _applyZoom();
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(S));
+        closeSettingsModal();
+        toast("設定已套用", "ok");
+        log(
+          `設定已儲存 — port:${S.apiPort} zoom:${Math.round(S.panelZoom * 100)}%`,
+          "ok",
+        );
+      }
+      function resetSettings() {
+        S = { ...DEFAULT_SETTINGS };
+        localStorage.removeItem(SETTINGS_KEY);
+        API = `http://localhost:${S.apiPort}`;
+        _applyZoom();
+        // 重填 UI
+        document.getElementById("set-zoom").value = 100;
+        document.getElementById("set-zoom-val").textContent = "100%";
+        document.getElementById("set-port").value = S.apiPort;
+        document.getElementById("set-map-lat").value = S.mapLat;
+        document.getElementById("set-map-lng").value = S.mapLng;
+        document.getElementById("set-map-zoom").value = S.mapZoom;
+        document.getElementById("set-cd-min").value = S.cdMinDist;
+        document.getElementById("set-cd-max").value = S.cdMaxSecs;
+        document.getElementById("set-cd-speed").value = S.cdWalkSpd;
+        document.getElementById("set-cd-buf").value = S.cdBuffer;
+        toast("已重設為預設值", "info");
+      }
+
+      // 步長 sizes mirror backend step_metres()
+      function stepM(spd) {
+        if (spd <= 10) return 6;
+        if (spd <= 20) return 8;
+        if (spd <= 40) return 14;
+        if (spd <= 70) return 28;
+        return 50;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // STATE
+      // ════════════════════════════════════════════════════════════
+      let map, sM, rM;
+      let mode = "teleport";
+      let rcMode = false;
+      let rPts = [],
+        rMks = [],
+        rPoly = null,
+        iPrv = null;
+      let gpxPts = [];
+      let showPrv = false;
+      let rwCenter = null,
+        rwCircle = null;
+      let animTimer = null,
+        pollTimer = null,
+        rwPoll = null;
+      let siTimer2 = null;
+      let logN = 0;
+      let isPaused = false;
+
+      // Keyboard nav state
+      let kbEnabled = false;
+      let kbStep = 5; // metres
+      let kbHoldTimer = null;
+      let kbLastPos = null; // {lat, lng} — current spoof position for kb nav
+
+      // Haversine 距離（公尺）— 飄移偵測用
+      function haverDist(la1, ln1, la2, ln2) {
+        const R = 6371000,
+          r = Math.PI / 180;
+        const a =
+          Math.sin(((la2 - la1) * r) / 2) ** 2 +
+          Math.cos(la1 * r) *
+            Math.cos(la2 * r) *
+            Math.sin(((ln2 - ln1) * r) / 2) ** 2;
+        return R * 2 * Math.asin(Math.sqrt(a));
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MAP
+      // ════════════════════════════════════════════════════════════
+      function initMap() {
+        map = L.map("map", { zoomControl: true }).setView(
+          [S.mapLat, S.mapLng],
+          S.mapZoom,
+        );
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OSM",
+          maxZoom: 19,
+        }).addTo(map);
+        map.on("click", onMapClick);
+        map.on("mousemove", (e) => {
+          if (mode === "teleport") {
+            document.getElementById("inp-lat").placeholder =
+              e.latlng.lat.toFixed(6);
+            document.getElementById("inp-lng").placeholder =
+              e.latlng.lng.toFixed(6);
+          }
+        });
+        if (navigator.geolocation)
+          navigator.geolocation.getCurrentPosition(
+            (p) => {
+              const lat = p.coords.latitude,
+                lng = p.coords.longitude;
+              rM = L.circleMarker([lat, lng], {
+                radius: 6,
+                color: "#555",
+                fillColor: "#555",
+                fillOpacity: 0.2,
+                weight: 1,
+              })
+                .addTo(map)
+                .bindPopup("// 真實位置");
+              if (!cdLastPos && !localStorage.getItem("gps_cd_lastpos")) {
+                cdLastPos = { lat, lng };
+                log(
+                  `真實位置已設為冷卻基準：${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+                  "in",
+                );
+              }
+            },
+            () => {
+              log("無法取得真實位置（定位權限未開啟）", "wa");
+            },
+          );
+      }
+
+      function onMapClick(e) {
+        const { lat, lng } = e.latlng;
+        if (mode === "teleport") {
+          document.getElementById("inp-lat").value = lat.toFixed(6);
+          document.getElementById("inp-lng").value = lng.toFixed(6);
+          setSM(lat, lng, false);
+          toast("座標已填入", "info");
+        } else if (mode === "route" && rcMode) {
+          if (routingMode !== "manual") {
+            addRoadPoint(lat, lng);
+          } else {
+            addPt(lat, lng);
+          }
+        }
+      }
+
+      function makeSMIcon(active) {
+        const c = active ? "#ffffff" : "#888888";
+        const glow = active ? `box-shadow:0 0 12px ${c};` : "";
+        return L.divIcon({
+          className: "",
+          html: `<div style="width:20px;height:20px;border-radius:50%;background:${c};border:2px solid #000;${glow}display:flex;align-items:center;justify-content:center;font-size:10px;transition:all .3s;">◎</div>`,
+          iconSize: [20, 20],
+          iconAnchor: [10, 10],
+        });
+      }
+
+      function setSM(lat, lng, active = true) {
+        kbLastPos = { lat, lng };
+        if (sM) {
+          sM.setLatLng([lat, lng]);
+          sM.setIcon(makeSMIcon(active));
+          sM.setPopupContent(`// ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+        } else {
+          sM = L.marker([lat, lng], { icon: makeSMIcon(active) })
+            .addTo(map)
+            .bindPopup(`// ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+        }
+        document.getElementById("hudlat").textContent = lat.toFixed(5);
+        document.getElementById("hudlng").textContent = lng.toFixed(5);
+        document.getElementById("hudst").textContent = active
+          ? "傳送中"
+          : "待確認";
+        document.getElementById("hud").classList.remove("hidden");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MODE
+      // ════════════════════════════════════════════════════════════
+      function setMode(m) {
+        mode = m;
+        ["teleport", "route", "gpx", "rw"].forEach((id) => {
+          const el = document.getElementById("mode-" + id);
+          const tb = document.getElementById("tab-" + id);
+          if (el) el.style.display = id === m ? "" : "none";
+          if (tb) tb.classList.toggle("active", id === m);
+        });
+        if (m !== "route") {
+          rcMode = false;
+          document.getElementById("brc").classList.remove("active");
+        }
+        if (m === "rw") refreshRWCenter();
+      }
+
+      function toggleRC() {
+        if (mode !== "route") setMode("route");
+        rcMode = !rcMode;
+        document.getElementById("brc").classList.toggle("active", rcMode);
+        toast(rcMode ? "路線點選模式：開" : "路線點選模式：關", "info");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TUNNEL
+      // ════════════════════════════════════════════════════════════
+
+      async function autoTeleportRealPos() {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          async (p) => {
+            const lat = p.coords.latitude,
+              lng = p.coords.longitude;
+            log(
+              `自動傳送真實位置 → ${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+              "in",
+            );
+            try {
+              // 等待 controller 連線（最多 5s）
+              for (let i = 0; i < 10; i++) {
+                const st = await api("/status");
+                if (st.ctrl_connected) break;
+                await new Promise((r) => setTimeout(r, 500));
+              }
+              const r = await api("/location/set", "POST", { lat, lng });
+              if (r.ok) {
+                setSM(lat, lng, true);
+                map.flyTo([lat, lng], 14, { duration: 1 });
+                // 設定為冷卻基準
+                cdLastPos = { lat, lng };
+                localStorage.setItem(
+                  "gps_cd_lastpos",
+                  JSON.stringify(cdLastPos),
+                );
+                log("真實位置已設定為起始點 ✓", "ok");
+                toast("已定位至真實位置", "ok");
+              }
+            } catch {}
+          },
+          () => {
+            log("無法取得真實位置，請手動設定", "wa");
+          },
+        );
+      }
+
+      async function startTunnel() {
+        log("啟動通道中...", "in");
+        setTUI("w");
+        try {
+          const r = await api("/tunnel/start", "POST");
+          if (r.ok) {
+            log(`通道已連線 → ${r.addr}:${r.port}`, "ok");
+            setTUI("on", r.addr, r.port);
+            startPoll();
+            toast("通道已連線", "ok");
+            try {
+              await api("/tunnel/set-rsd", "POST", {
+                addr: r.addr,
+                port: r.port,
+              });
+            } catch {}
+            // 通道連線後自動傳送真實位置
+            autoTeleportRealPos();
+          } else {
+            log("通道失敗: " + (r.msg || ""), "er");
+            setTUI("off");
+            toast("通道失敗", "err");
+          }
+        } catch {
+          log("後端未啟動", "er");
+          setTUI("off");
+          toast("後端未啟動", "err");
+        }
+      }
+
+      async function stopTunnel() {
+        try {
+          await api("/tunnel/stop", "POST");
+        } catch {}
+        setTUI("off");
+        stopPoll();
+        log("通道已停止", "wa");
+      }
+
+      function setTUI(s, a, p) {
+        const d = document.getElementById("td");
+        const t = document.getElementById("tb-st");
+        const r = document.getElementById("tb-sr");
+        const bs = document.getElementById("bst");
+        const be = document.getElementById("bsp");
+        d.className = "dot";
+        if (s === "on") {
+          d.classList.add("on");
+          t.textContent = "通道已連線";
+          r.textContent = a && p ? `RSD ${a}:${p}` : "";
+          bs.disabled = true;
+          be.disabled = false;
+        } else if (s === "w") {
+          d.classList.add("warn");
+          t.textContent = "連線中...";
+          r.textContent = "";
+          bs.disabled = true;
+          be.disabled = true;
+        } else {
+          t.textContent = "離線 — 請啟動通道";
+          r.textContent = "";
+          bs.disabled = false;
+          be.disabled = true;
+        }
+      }
+
+      function startPoll() {
+        stopPoll();
+        siTimer2 = setInterval(async () => {
+          try {
+            const s = await api("/status");
+            if (!s.tunnel_running) setTUI("off");
+          } catch {}
+        }, 6000);
+      }
+      function stopPoll() {
+        if (siTimer2) {
+          clearInterval(siTimer2);
+          siTimer2 = null;
+        }
+      }
+
+      async function mountDDI() {
+        log("掛載 DDI 中...", "in");
+        toast("掛載 DDI 中...", "info");
+        try {
+          const r = await api("/mounter/mount", "POST");
+          r.ok
+            ? (log("DDI 掛載成功 ✓", "ok"), toast("DDI 就緒", "ok"))
+            : (log("DDI 掛載失敗: " + (r.stderr || ""), "er"),
+              toast("DDI 掛載失敗", "err"));
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TELEPORT
+      // ════════════════════════════════════════════════════════════
+      async function teleport() {
+        const lat = parseFloat(document.getElementById("inp-lat").value);
+        const lng = parseFloat(document.getElementById("inp-lng").value);
+        if (isNaN(lat) || isNaN(lng)) {
+          toast("請輸入有效座標", "err");
+          return;
+        }
+        log(`傳送 → ${lat.toFixed(5)}, ${lng.toFixed(5)}`, "in");
+        try {
+          const r = await api("/location/set", "POST", { lat, lng });
+          if (r.ok) {
+            setSM(lat, lng, true);
+            map.flyTo([lat, lng], Math.max(map.getZoom(), 14), { duration: 1 });
+            log("位置已設定 ✓", "ok");
+            toast("位置已設定", "ok");
+            if (cdMode !== "off") triggerCooldown({ lat, lng });
+          } else {
+            log("失敗：" + (r.msg || ""), "er");
+            toast("設定失敗 — 通道已啟動？", "err");
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      async function clearLoc() {
+        try {
+          const r = await api("/location/clear", "POST");
+          if (r.ok) {
+            if (sM) {
+              map.removeLayer(sM);
+              sM = null;
+              kbLastPos = null;
+            }
+            document.getElementById("hud").classList.add("hidden");
+            log("已還原真實 GPS ✓", "ok");
+            toast("已還原真實 GPS", "ok");
+            stopCooldown();
+            cdLastPos = null;
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      function qs(lat, lng) {
+        document.getElementById("inp-lat").value = lat;
+        document.getElementById("inp-lng").value = lng;
+        setMode("teleport");
+        map.flyTo([lat, lng], 13);
+        setSM(lat, lng, false);
+      }
+
+      // Search
+      document.addEventListener("DOMContentLoaded", () => {
+        document
+          .getElementById("inp-search")
+          .addEventListener("keydown", async (e) => {
+            if (e.key !== "Enter") return;
+            const q = e.target.value.trim();
+            if (!q) return;
+            log("搜尋： " + q, "in");
+            try {
+              const res = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`,
+              );
+              const d = await res.json();
+              if (d.length) {
+                const { lat, lon, display_name } = d[0];
+                document.getElementById("inp-lat").value =
+                  parseFloat(lat).toFixed(6);
+                document.getElementById("inp-lng").value =
+                  parseFloat(lon).toFixed(6);
+                map.flyTo([lat, lon], 14);
+                setSM(parseFloat(lat), parseFloat(lon), false);
+                log("找到：" + display_name.slice(0, 50), "ok");
+                toast("地點已找到", "ok");
+              } else toast("找不到地點", "err");
+            } catch {
+              toast("搜尋失敗", "err");
+            }
+          });
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // SAVED LOCATIONS
+      // ════════════════════════════════════════════════════════════
+      function loadSaved() {
+        try {
+          return JSON.parse(localStorage.getItem(SAVE_KEY) || "[]");
+        } catch {
+          return [];
+        }
+      }
+      function writeSaved(l) {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(l));
+      }
+      function renderSaved() {
+        const list = loadSaved(),
+          el = document.getElementById("modal-saved-list");
+        const countEl = document.getElementById("saved-count");
+        if (countEl) countEl.textContent = list.length;
+        if (!el) return;
+        if (!list.length) {
+          el.innerHTML = '<div class="sv-empty">// NO SAVED LOCATIONS</div>';
+          return;
+        }
+        el.innerHTML = list
+          .map(
+            (s, i) =>
+              `<div class="sv-item">
+      <div class="sv-name" onclick="loadSavedI(${i})" title="${s.lat.toFixed(6)}, ${s.lng.toFixed(6)}">▸ ${s.name}</div>
+      <div class="sv-coord">${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}</div>
+      <div class="sv-del" onclick="delSaved(${i})">✕</div>
+    </div>`,
+          )
+          .join("");
+      }
+      function saveCurrentLoc() {
+        const lat = parseFloat(document.getElementById("inp-lat").value);
+        const lng = parseFloat(document.getElementById("inp-lng").value);
+        if (isNaN(lat) || isNaN(lng)) {
+          toast("請先填入座標", "err");
+          return;
+        }
+        const ni = document.getElementById("save-name"),
+          list = loadSaved();
+        const name =
+          ni.value.trim() ||
+          `位置-${list.length + 1} (${lat.toFixed(3)},${lng.toFixed(3)})`;
+        if (
+          list.find(
+            (s) =>
+              Math.abs(s.lat - lat) < 0.0001 && Math.abs(s.lng - lng) < 0.0001,
+          )
+        ) {
+          toast("此座標已儲存", "err");
+          return;
+        }
+        list.push({ name, lat, lng });
+        writeSaved(list);
+        ni.value = "";
+        renderSaved();
+        toast("已儲存：" + name, "ok");
+      }
+      function loadSavedI(i) {
+        const s = loadSaved()[i];
+        if (!s) return;
+        document.getElementById("inp-lat").value = s.lat.toFixed(6);
+        document.getElementById("inp-lng").value = s.lng.toFixed(6);
+        setMode("teleport");
+        map.flyTo([s.lat, s.lng], 15);
+        setSM(s.lat, s.lng, false);
+        closeSavedModal();
+        toast("已載入：" + s.name, "info");
+      }
+      function delSaved(i) {
+        const l = loadSaved(),
+          n = l[i]?.name || "";
+        l.splice(i, 1);
+        writeSaved(l);
+        renderSaved();
+        toast("已刪除：" + n, "info");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // INTERPOLATION  (mirrors backend)
+      // ════════════════════════════════════════════════════════════
+      function hKm(p1, p2) {
+        const R = 6371,
+          r = Math.PI / 180;
+        const a =
+          Math.sin(((p2.lat - p1.lat) * r) / 2) ** 2 +
+          Math.cos(p1.lat * r) *
+            Math.cos(p2.lat * r) *
+            Math.sin(((p2.lng - p1.lng) * r) / 2) ** 2;
+        return R * 2 * Math.asin(Math.sqrt(a));
+      }
+
+      function buildPath(pts, spd) {
+        const sm = stepM(spd),
+          sk = sm / 1000;
+        const ivl = Math.max(2.0, (sk / spd) * 3600);
+        const dense = [{ ...pts[0], dwell: 0 }];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p1 = pts[i],
+            p2 = pts[i + 1],
+            n = Math.max(1, Math.floor(hKm(p1, p2) / sk));
+          for (let j = 1; j <= n; j++) {
+            const t = j / n;
+            dense.push({
+              lat: p1.lat + (p2.lat - p1.lat) * t,
+              lng: p1.lng + (p2.lng - p1.lng) * t,
+              dwell: j === n ? p2.dwell || 0 : 0,
+            });
+          }
+        }
+        return { dense, ivl, sm };
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // 路線
+      // ════════════════════════════════════════════════════════════
+      function addPt(lat, lng) {
+        rPts.push({ lat, lng, dwell: 0 });
+        renderRL();
+        renderMap();
+        updateSI();
+      }
+
+      function renderRL() {
+        const el = document.getElementById("rl");
+        document.getElementById("rc").textContent = rPts.length + " PTS";
+        if (!rPts.length) {
+          el.innerHTML = '<div class="re">// 點擊 ✚ 後在地圖上點選路線點</div>';
+          return;
+        }
+        el.innerHTML = rPts
+          .map(
+            (p, i) => `
+    <div class="ri">
+      <div class="rin">${i + 1}</div>
+      <div class="ric">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div>
+      <div class="ri-dwell">
+        <input type="number" min="0" max="3600" value="${p.dwell || 0}" title="Dwell (s)"
+          onchange="rPts[${i}].dwell=parseInt(this.value)||0;updateSI()"
+          onclick="event.stopPropagation()">
+        <div class="ri-dwell-label">秒停留</div>
+      </div>
+      <div class="rid" onclick="rmPt(${i})">✕</div>
+    </div>`,
+          )
+          .join("");
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function rmPt(i) {
+        rPts.splice(i, 1);
+        renderRL();
+        renderMap();
+        updateSI();
+      }
+
+      function renderMap() {
+        rMks.forEach((m) => map.removeLayer(m));
+        rMks = [];
+        if (rPoly) {
+          map.removeLayer(rPoly);
+          rPoly = null;
+        }
+        if (iPrv && !showPrv) {
+          map.removeLayer(iPrv);
+          iPrv = null;
+        }
+        if (!rPts.length) return;
+        rPts.forEach((p, i) => {
+          const c = i === 0 ? "#fff" : i === rPts.length - 1 ? "#555" : "#888";
+          rMks.push(
+            L.marker([p.lat, p.lng], {
+              icon: L.divIcon({
+                className: "",
+                html: `<div style="width:16px;height:16px;border-radius:50%;background:${c};border:1px solid #000;display:flex;align-items:center;justify-content:center;font-size:7px;font-weight:700;color:#000;font-family:'Orbitron',sans-serif;">${i + 1}</div>`,
+                iconSize: [16, 16],
+                iconAnchor: [8, 8],
+              }),
+            }).addTo(map),
+          );
+        });
+        if (rPts.length > 1) {
+          rPoly = L.polyline(
+            rPts.map((p) => [p.lat, p.lng]),
+            { color: "#00e5ff", weight: 2.5, opacity: 0.9, dashArray: "6 3" },
+          ).addTo(map);
+          map.fitBounds(rPoly.getBounds(), { padding: [30, 30] });
+        }
+        if (showPrv && rPts.length >= 2) drawPreview();
+      }
+
+      function updateSI() {
+        if (rPts.length < 2) {
+          document.getElementById("si").textContent =
+            "// 設定路線點後顯示插點資訊";
+          return;
+        }
+        const spd = parseFloat(document.getElementById("spd").value);
+        const { dense, ivl, sm } = buildPath(rPts, spd);
+        const loops = parseInt(document.getElementById("loops").value) || 1;
+        const total = dense.length * ivl,
+          mm = Math.floor(total / 60),
+          ss = Math.round(total % 60);
+        const dwell = rPts.reduce((s, p) => s + (p.dwell || 0), 0);
+        const loopStr = loops === 0 ? "∞ 圈" : `${loops} 圈`;
+        document.getElementById("si").innerHTML =
+          `<b style="color:var(--white)">${dense.length}</b> 步 · <b>${sm}m</b>/步 · <b style="color:var(--hi)">${ivl.toFixed(1)}s</b>/步 · <b style="color:var(--mid)">${mm}m${ss}s</b>/圈${dwell > 0 ? ` · 停留 <b>${dwell}s</b>` : ""} · ${loopStr}`;
+        if (showPrv) drawPreview();
+      }
+
+      function onSpdChange(v) {
+        document.getElementById("sv").textContent = v;
+        updateSI();
+        const presets = [5, 8, 15];
+        [0, 1, 2].forEach((i) => {
+          const b = document.getElementById("rspd-" + i);
+          if (b) b.classList.toggle("active", parseFloat(v) === presets[i]);
+        });
+      }
+
+      function drawPreview() {
+        if (iPrv) {
+          map.removeLayer(iPrv);
+          iPrv = null;
+        }
+        const spd = parseFloat(document.getElementById("spd").value);
+        const { dense } = buildPath(rPts, spd);
+        const g = L.layerGroup();
+        dense.forEach((p) =>
+          L.circleMarker([p.lat, p.lng], {
+            radius: 2,
+            color: "#0088ff",
+            fillColor: "#0088ff",
+            fillOpacity: 0.7,
+            weight: 1,
+          }).addTo(g),
+        );
+        iPrv = g;
+        g.addTo(map);
+      }
+      function togglePreview() {
+        showPrv = document.getElementById("cpv").checked;
+        if (!showPrv && iPrv) {
+          map.removeLayer(iPrv);
+          iPrv = null;
+        } else if (showPrv && rPts.length >= 2) drawPreview();
+      }
+      function clearRoute() {
+        rPts = [];
+        renderRL();
+        renderMap();
+        document.getElementById("si").textContent =
+          "// 設定路線點後顯示插點資訊";
+      }
+
+      async function startRoute() {
+        if (rPts.length < 2) {
+          toast("至少需要 2 個路線點", "err");
+          return;
+        }
+        const spd = parseFloat(document.getElementById("spd").value);
+        const loops = parseInt(document.getElementById("loops").value) || 1;
+        const pts = rPts.map((p) => ({
+          lat: p.lat,
+          lng: p.lng,
+          dwell: p.dwell || 0,
+        }));
+        log(
+          `路線開始： ${rPts.length} PTS @ ${spd}km/h × ${loops || "∞"}`,
+          "in",
+        );
+        try {
+          const r = await api("/route/play", "POST", {
+            points: pts,
+            speed: spd,
+            loops,
+          });
+          if (r.ok) {
+            setRouteUI(true);
+            const { dense, ivl } = buildPath(rPts, spd);
+            startAnim(dense, ivl, loops);
+            document.getElementById("lsw").style.display = "flex";
+            document.getElementById("lss").value = spd;
+            document.getElementById("lsb").textContent = spd + " km/h";
+            log(`${r.steps} 步 · ${r.step_m}m · ${r.interval}s`, "ok");
+            toast("路線開始", "ok");
+          } else {
+            log("路線失敗: " + (r.msg || ""), "er");
+            toast("路線失敗", "err");
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      async function pauseRoute() {
+        isPaused = !isPaused;
+        try {
+          await api(isPaused ? "/route/pause" : "/route/resume", "POST");
+          const badge = document.getElementById("rp-pause");
+          isPaused
+            ? badge.classList.add("show")
+            : badge.classList.remove("show");
+          toast(isPaused ? "已暫停" : "繼續", "info");
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      async function stopRoute() {
+        isPaused = false;
+        try {
+          await api("/route/stop", "POST");
+        } catch {}
+        stopAnim();
+        stopRoutePoll();
+        stopRWPoll();
+        setRouteUI(false);
+        document.getElementById("lsw").style.display = "none";
+        document.getElementById("rp-pause").classList.remove("show");
+        document.getElementById("brws").disabled = false;
+        document.getElementById("brwe").disabled = true;
+        document.getElementById("brwp").disabled = true;
+        document.getElementById("rw-status").textContent = "";
+        log("路線已停止 — 位置保持", "wa");
+        toast("已停止 — 位置保持", "info");
+      }
+
+      function setRouteUI(active) {
+        document.getElementById("brs").disabled = active;
+        document.getElementById("brp").disabled = !active;
+        document.getElementById("bre").disabled = !active;
+        document.getElementById("bgp").disabled = active || gpxPts.length < 2;
+        document.getElementById("bgpp").disabled = !active;
+        if (active) startRoutePoll();
+        else stopRoutePoll();
+      }
+
+      function startRoutePoll() {
+        stopRoutePoll();
+        pollTimer = setInterval(async () => {
+          try {
+            const s = await api("/route/status");
+            if (s.active && s.lat) setSM(s.lat, s.lng, true);
+            if (!s.active) {
+              setRouteUI(false);
+              stopRoutePoll();
+              document.getElementById("lsw").style.display = "none";
+            }
+            const badge = document.getElementById("rp-pause");
+            s.paused
+              ? badge.classList.add("show")
+              : badge.classList.remove("show");
+          } catch {}
+        }, 1500);
+      }
+      function stopRoutePoll() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      function startAnim(dense, ivl, loops) {
+        stopAnim();
+        document.getElementById("rp").classList.add("active");
+        let idx = 0,
+          loopN = 1;
+        animTimer = setInterval(() => {
+          if (isPaused) return;
+          if (idx >= dense.length) {
+            if (loops === 0 || loopN < loops) {
+              idx = 0;
+              loopN++;
+              return;
+            }
+            stopAnim();
+            return;
+          }
+          const pct = Math.round((idx / Math.max(1, dense.length - 1)) * 100);
+          document.getElementById("rpf").style.width = pct + "%";
+          document.getElementById("rpi").textContent =
+            `步驟 ${idx + 1}/${dense.length}${loops !== 1 ? ` · 圈 ${loopN}/${loops || "∞"}` : ""}`;
+          idx++;
+        }, ivl * 1000);
+      }
+      function stopAnim() {
+        if (animTimer) {
+          clearInterval(animTimer);
+          animTimer = null;
+        }
+        document.getElementById("rp").classList.remove("active");
+        document.getElementById("rpf").style.width = "0%";
+      }
+
+      // Live speed
+      function onLiveSpd(v) {
+        document.getElementById("lsb").textContent = v + " km/h";
+        document.getElementById("lsb").classList.add("changed");
+      }
+      async function applyLiveSpd() {
+        const v = parseFloat(document.getElementById("lss").value);
+        try {
+          const r = await api("/route/speed", "POST", { speed: v });
+          if (r.ok) {
+            document.getElementById("lsb").textContent = v + " km/h";
+            document.getElementById("lsb").classList.remove("changed");
+            toast(`速度 → ${v} km/h`, "ok");
+            log(`LIVE SPEED → ${v}km/h`, "ok");
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // GPX
+      // ════════════════════════════════════════════════════════════
+      function loadGPX(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const rd = new FileReader();
+        rd.onload = (e) => {
+          try {
+            const doc = new DOMParser().parseFromString(
+              e.target.result,
+              "application/xml",
+            );
+            const ps = doc.querySelectorAll("trkpt, wpt, rtept");
+            gpxPts = Array.from(ps).map((p) => ({
+              lat: parseFloat(p.getAttribute("lat")),
+              lng: parseFloat(p.getAttribute("lon")),
+              dwell: 0,
+            }));
+            document.getElementById("gpx-info").textContent =
+              `// ${file.name.toUpperCase()} — ${gpxPts.length} PTS`;
+            document.getElementById("bgp").disabled = gpxPts.length < 2;
+            if (rPoly) map.removeLayer(rPoly);
+            if (gpxPts.length > 1) {
+              rPoly = L.polyline(
+                gpxPts.map((p) => [p.lat, p.lng]),
+                { color: "#ff6600", weight: 2.5, opacity: 0.9 },
+              ).addTo(map);
+              map.fitBounds(rPoly.getBounds(), { padding: [30, 30] });
+            }
+            log(`GPX 已載入: ${gpxPts.length} PTS`, "ok");
+            toast("GPX 已載入", "ok");
+          } catch {
+            toast("GPX 解析失敗", "err");
+          }
+        };
+        rd.readAsText(file);
+      }
+      async function playGPX() {
+        if (gpxPts.length < 2) {
+          toast("請先載入 GPX", "err");
+          return;
+        }
+        const loops = parseInt(document.getElementById("gpx-loops").value) || 1;
+        log(`GPX 播放：${gpxPts.length} 點 × ${loops || "∞"}`, "in");
+        try {
+          const r = await api("/route/play", "POST", {
+            points: gpxPts,
+            speed: 5,
+            loops,
+          });
+          if (r.ok) {
+            setRouteUI(true);
+            const { dense, ivl } = buildPath(gpxPts, 5);
+            startAnim(dense, ivl, loops);
+            log(`${r.steps} 步`, "ok");
+            toast("GPX 播放中", "ok");
+          } else {
+            log("GPX 播放失敗", "er");
+            toast("GPX 播放失敗", "err");
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // RANDOM 步行
+      // ════════════════════════════════════════════════════════════
+      function refreshRWCenter() {
+        if (sM) {
+          const ll = sM.getLatLng();
+          rwCenter = { lat: ll.lat, lng: ll.lng };
+          document.getElementById("rw-center").textContent =
+            `// ${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}`;
+          updateRWCircle();
+        } else {
+          document.getElementById("rw-center").textContent =
+            "// 請先傳送到目標位置";
+          if (rwCircle) {
+            map.removeLayer(rwCircle);
+            rwCircle = null;
+          }
+        }
+      }
+      function updateRWCircle() {
+        if (!rwCenter) return;
+        if (rwCircle) {
+          map.removeLayer(rwCircle);
+          rwCircle = null;
+        }
+        const r = parseInt(document.getElementById("rw-radius").value) || 300;
+        rwCircle = L.circle([rwCenter.lat, rwCenter.lng], {
+          radius: r,
+          color: "#ffcc00",
+          fillColor: "#ffcc00",
+          fillOpacity: 0.06,
+          weight: 1.5,
+          dashArray: "6 3",
+        }).addTo(map);
+      }
+      async function startRW() {
+        refreshRWCenter();
+        if (!rwCenter) {
+          toast("請先傳送到中心位置", "err");
+          return;
+        }
+        const radius =
+          parseInt(document.getElementById("rw-radius").value) || 300;
+        const speed = parseFloat(document.getElementById("rw-spd").value) || 5;
+        const loops = parseInt(document.getElementById("rw-loops").value) || 0;
+        log(`漫步開始： r=${radius}m @ ${speed}km/h`, "in");
+        try {
+          const r = await api("/route/random-walk", "POST", {
+            center_lat: rwCenter.lat,
+            center_lng: rwCenter.lng,
+            radius_m: radius,
+            speed,
+            loops,
+          });
+          if (r.ok) {
+            document.getElementById("brws").disabled = true;
+            document.getElementById("brwe").disabled = false;
+            document.getElementById("brwp").disabled = false;
+            startRWPoll();
+            log(r.msg, "ok");
+            toast("漫步開始", "ok");
+          } else {
+            log("RW FAILED: " + (r.msg || ""), "er");
+            toast("漫步失敗", "err");
+          }
+        } catch {
+          toast("後端未啟動", "err");
+        }
+      }
+      function startRWPoll() {
+        stopRWPoll();
+        rwPoll = setInterval(async () => {
+          try {
+            const s = await api("/route/status");
+            if (!s.active) {
+              stopRWPoll();
+              document.getElementById("brws").disabled = false;
+              document.getElementById("brwe").disabled = true;
+              document.getElementById("brwp").disabled = true;
+              document.getElementById("rw-status").textContent =
+                "// 漫步已結束";
+              return;
+            }
+            if (s.lat) {
+              setSM(s.lat, s.lng, true);
+              document.getElementById("rw-status").textContent =
+                `步驟 ${s.step} · ${s.lat.toFixed(5)}, ${s.lng.toFixed(5)}${s.paused ? " · 已暫停" : ""}`;
+            }
+          } catch {}
+        }, 1500);
+      }
+      function stopRWPoll() {
+        if (rwPoll) {
+          clearInterval(rwPoll);
+          rwPoll = null;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SPEED PRESETS
+      // ════════════════════════════════════════════════════════════
+      function setSpdPreset(target, val, idx) {
+        if (target === "route") {
+          document.getElementById("spd").value = val;
+          document.getElementById("sv").textContent = val;
+          onSpdChange(val);
+          [0, 1, 2].forEach((i) => {
+            const b = document.getElementById("rspd-" + i);
+            if (b) b.classList.toggle("active", i === idx);
+          });
+        } else {
+          document.getElementById("rw-spd").value = val;
+          document.getElementById("rw-sv").textContent = val;
+          [0, 1, 2].forEach((i) => {
+            const b = document.getElementById("wspd-" + i);
+            if (b) b.classList.toggle("active", i === idx);
+          });
+        }
+      }
+      function onRWSpdChange(v) {
+        document.getElementById("rw-sv").textContent = v;
+        const presets = [5, 8, 15];
+        [0, 1, 2].forEach((i) => {
+          const b = document.getElementById("wspd-" + i);
+          if (b) b.classList.toggle("active", parseFloat(v) === presets[i]);
+        });
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // KEYBOARD NAVIGATION
+      // ════════════════════════════════════════════════════════════
+      function kbUpdateStep(v) {
+        kbStep = parseInt(v);
+        document.getElementById("kb-step-val").textContent = kbStep + "m";
+      }
+
+      function toggleLogFloat() {
+        const panel = document.getElementById('log-float');
+        const btn   = document.getElementById('btn-log');
+        const isOpen = panel.classList.toggle('lf-open');
+        if (btn) btn.classList.toggle('active', isOpen);
+        if (isOpen) { const el = document.getElementById('log'); if (el) el.scrollTop = el.scrollHeight; }
+      }
+      function toggleLogCollapse() {
+        const panel = document.getElementById('log-float');
+        const btn   = document.getElementById('log-collapse-btn');
+        const collapsed = panel.classList.toggle('lf-collapsed');
+        if (btn) btn.textContent = collapsed ? '＋' : '—';
+      }
+
+      function toggleKbFloat() {
+        const panel = document.getElementById("kb-float");
+        const btn = document.getElementById("btn-kb");
+        const isOpen = panel.classList.toggle("kbf-open");
+        if (btn) btn.classList.toggle("active", isOpen);
+        // re-wire hold events each time panel opens
+        if (isOpen) _bindKbHold();
+      }
+
+      function toggleKbCollapse() {
+        const panel = document.getElementById("kb-float");
+        const btn = document.getElementById("kb-collapse-btn");
+        const collapsed = panel.classList.toggle("kbf-collapsed");
+        if (btn) btn.textContent = collapsed ? "＋" : "—";
+      }
+
+      function toggleKb() {
+        kbEnabled = !kbEnabled;
+        const badge = document.getElementById("kb-badge");
+        const btn = document.getElementById("kb-toggle-btn");
+        if (badge) {
+          badge.textContent = kbEnabled ? "ON" : "OFF";
+          badge.classList.toggle("on", kbEnabled);
+        }
+        if (btn) btn.textContent = kbEnabled ? "停用鍵盤" : "啟用鍵盤";
+        toast(kbEnabled ? "鍵盤控制已啟用" : "鍵盤控制已停用", "info");
+        log(kbEnabled ? "KEYBOARD NAV ON" : "KEYBOARD NAV OFF", "in");
+      }
+
+      // Compute next position given direction and distance in metres
+      function kbCalcNext(dir) {
+        const pos = kbLastPos;
+        if (!pos) return null;
+        const R = 6371000;
+        const dLat = dir === "n" ? kbStep : dir === "s" ? -kbStep : 0;
+        const dLng = dir === "e" ? kbStep : dir === "w" ? -kbStep : 0;
+        const lat = pos.lat + (dLat / R) * (180 / Math.PI);
+        const lng =
+          pos.lng +
+          ((dLng / R) * (180 / Math.PI)) / Math.cos((pos.lat * Math.PI) / 180);
+        return { lat, lng };
+      }
+
+      async function kbMove(dir) {
+        if (!kbEnabled) {
+          toast("請先啟用鍵盤控制", "err");
+          return;
+        }
+        if (!kbLastPos) {
+          toast("請先設定一個位置", "err");
+          return;
+        }
+        const next = kbCalcNext(dir);
+        if (!next) return;
+
+        // Visual feedback
+        const btnId = { n: "kb-n", s: "kb-s", e: "kb-e", w: "kb-w" }[dir];
+        const btn = document.getElementById(btnId);
+        if (btn) {
+          btn.classList.add("pressed");
+          setTimeout(() => btn.classList.remove("pressed"), 150);
+        }
+
+        try {
+          const r = await api("/location/set", "POST", {
+            lat: next.lat,
+            lng: next.lng,
+          });
+          if (r.ok) {
+            setSM(next.lat, next.lng, true);
+          }
+        } catch {}
+      }
+
+      // Hold to repeat
+      const kbHoldDelay = 300; // ms before repeat starts
+      const kbHoldRepeat = 150; // ms between repeats
+
+      function kbHoldStart(dir) {
+        kbMove(dir);
+        kbHoldTimer = setTimeout(() => {
+          kbHoldTimer = setInterval(() => kbMove(dir), kbHoldRepeat);
+        }, kbHoldDelay);
+      }
+
+      function kbHoldStop() {
+        if (kbHoldTimer) {
+          clearInterval(kbHoldTimer);
+          clearTimeout(kbHoldTimer);
+          kbHoldTimer = null;
+        }
+      }
+
+      // Wire up hold on KB buttons
+      function _bindKbHold() {
+        const dirMap = { "kb-n": "n", "kb-s": "s", "kb-e": "e", "kb-w": "w" };
+        Object.entries(dirMap).forEach(([id, dir]) => {
+          const btn = document.getElementById(id);
+          if (!btn) return;
+          // clone to remove any previous listeners
+          const fresh = btn.cloneNode(true);
+          btn.replaceWith(fresh);
+          fresh.addEventListener("mousedown", () => kbHoldStart(dir));
+          fresh.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+            kbHoldStart(dir);
+          });
+        });
+      }
+      document.addEventListener("mouseup", kbHoldStop);
+      document.addEventListener("touchend", kbHoldStop);
+
+      // Keyboard events
+      document.addEventListener("keydown", (e) => {
+        if (!kbEnabled) return;
+        // Don't intercept when typing in an input
+        if (e.target.tagName === "INPUT") return;
+        const dirMap = {
+          ArrowUp: "n",
+          ArrowDown: "s",
+          ArrowLeft: "w",
+          ArrowRight: "e",
+          w: "n",
+          s: "s",
+          a: "w",
+          d: "e",
+          W: "n",
+          S: "s",
+          A: "w",
+          D: "e",
+        };
+        const dir = dirMap[e.key];
+        if (!dir) return;
+        e.preventDefault();
+        if (e.repeat) return; // handled by keydown + hold logic
+        kbHoldStart(dir);
+      });
+      document.addEventListener("keyup", (e) => {
+        if (!kbEnabled) return;
+        const dirKeys = [
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "w",
+          "s",
+          "a",
+          "d",
+          "W",
+          "S",
+          "A",
+          "D",
+        ];
+        if (dirKeys.includes(e.key)) kbHoldStop();
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // NAV
+      // ════════════════════════════════════════════════════════════
+      function flyS() {
+        if (sM) map.flyTo(sM.getLatLng(), 15);
+        else toast("尚未設定虛擬位置", "err");
+      }
+      function flyR() {
+        if (rM) map.flyTo(rM.getLatLng(), 15);
+        else toast("無法取得真實位置", "err");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // LOG
+      // ════════════════════════════════════════════════════════════
+      const LT = { ok: "lok", er: "ler", in: "lin", wa: "lwa" };
+      function log(msg, t = "in") {
+        const el = document.getElementById("log");
+        const ts = new Date().toTimeString().slice(0, 8);
+        el.innerHTML += `<div class="${LT[t] || "lin"}">[${ts}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
+        logN++;
+        document.getElementById("lc").textContent = logN;
+      }
+      function clearLog() {
+        document.getElementById("log").innerHTML = "";
+        logN = 0;
+        document.getElementById("lc").textContent = "0";
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TOAST
+      // ════════════════════════════════════════════════════════════
+      function toast(msg, type = "info") {
+        const w = document.getElementById("tw"),
+          el = document.createElement("div");
+        el.className = `t ${type}`;
+        el.textContent = msg;
+        w.appendChild(el);
+        setTimeout(() => el.remove(), 2500);
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // API
+      // ════════════════════════════════════════════════════════════
+      async function api(path, method = "GET", body) {
+        const o = { method, headers: { "Content-Type": "application/json" } };
+        if (body) o.body = JSON.stringify(body);
+        return (await fetch(API + path, o)).json();
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // POOL COUNT DISPLAY
+      // ════════════════════════════════════════════════════════════
+
+      // ════════════════════════════════════════════════════════════
+      // COOLDOWN SYSTEM
+      // ════════════════════════════════════════════════════════════
+      const CD_KEY = "gps_cd_mode"; // 冷卻模式
+      const CD_STATE_KEY = "gps_cd_state"; // 冷卻狀態（endTime / lastPos / totalSecs）
+
+      let cdTimer = null;
+      let cdEndTime = 0;
+      let cdTotalSecs = 0;
+      let cdLastPos = null; // {lat, lng} 上一次傳送的位置
+      let cdMode = localStorage.getItem(CD_KEY) || "distance"; // 'distance' | 'fixed'
+      let cdFixedSecs = 120; // 固定模式預設 120 秒
+
+      // 依距離計算冷卻時間
+      // 邏輯：步行速度約 5km/h，走完這段距離需要的時間 × 1.5 倍緩衝
+      function calcCooldown(fromPos, toPos) {
+        if (!fromPos || !toPos) return 0;
+        const R = 6371000;
+        const dLat = ((toPos.lat - fromPos.lat) * Math.PI) / 180;
+        const dLng = ((toPos.lng - fromPos.lng) * Math.PI) / 180;
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos((fromPos.lat * Math.PI) / 180) *
+            Math.cos((toPos.lat * Math.PI) / 180) *
+            Math.sin(dLng / 2) ** 2;
+        const distM = R * 2 * Math.asin(Math.sqrt(a));
+
+        if (distM < S.cdMinDist) return 0;
+
+        const walkSecs = distM / S.cdWalkSpd;
+        return Math.min(Math.round(walkSecs * S.cdBuffer), S.cdMaxSecs);
+      }
+
+      function startCooldown(secs, fromPos, toPos) {
+        if (secs <= 0) return;
+        if (cdTimer) {
+          clearInterval(cdTimer);
+          cdTimer = null;
+        }
+
+        cdTotalSecs = secs;
+        cdEndTime = Date.now() + secs * 1000;
+        // 持久化冷卻狀態，重整後可恢復
+        localStorage.setItem(
+          CD_STATE_KEY,
+          JSON.stringify({
+            endTime: cdEndTime,
+            totalSecs: cdTotalSecs,
+          }),
+        );
+
+        const bar = document.getElementById("cooldown-bar");
+        const fill = document.getElementById("cooldown-fill");
+        const label = document.getElementById("cooldown-label");
+        const tpBtn = document.getElementById("cd-tp-btn");
+
+        if (bar) bar.style.display = "flex";
+        if (tpBtn) {
+          tpBtn.disabled = true;
+        }
+
+        let distStr = "";
+        if (fromPos && toPos) {
+          const R = 6371000;
+          const dLat = ((toPos.lat - fromPos.lat) * Math.PI) / 180;
+          const dLng = ((toPos.lng - fromPos.lng) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos((fromPos.lat * Math.PI) / 180) *
+              Math.cos((toPos.lat * Math.PI) / 180) *
+              Math.sin(dLng / 2) ** 2;
+          const distM = Math.round(R * 2 * Math.asin(Math.sqrt(a)));
+          distStr =
+            distM >= 1000
+              ? ` · ${(distM / 1000).toFixed(1)}km`
+              : ` · ${distM}m`;
+        }
+
+        function tick() {
+          const remaining = Math.max(
+            0,
+            Math.ceil((cdEndTime - Date.now()) / 1000),
+          );
+          const pct = (remaining / cdTotalSecs) * 100;
+
+          if (fill) fill.style.width = pct + "%";
+
+          const mm = Math.floor(remaining / 60);
+          const ss = String(remaining % 60).padStart(2, "0");
+          const timeStr = mm > 0 ? `${mm}:${ss}` : `${remaining}s`;
+
+          const tpBtn2 = document.getElementById("cd-tp-btn");
+          if (tpBtn2) tpBtn2.textContent = `▶ 冷卻中 ${timeStr}${distStr}`;
+
+          if (remaining <= 0) {
+            clearInterval(cdTimer);
+            cdTimer = null;
+            if (bar) bar.style.display = "none";
+            if (tpBtn2) {
+              tpBtn2.disabled = false;
+              tpBtn2.textContent = "▶ 設定此位置";
+            }
+          }
+        }
+
+        tick();
+        cdTimer = setInterval(tick, 250);
+      }
+
+      function triggerCooldown(toPos) {
+        if (cdMode === "off") return;
+        const prev = cdLastPos ? { ...cdLastPos } : null;
+        const secs = calcCooldown(prev, toPos);
+        cdLastPos = toPos ? { ...toPos } : null;
+        localStorage.setItem("gps_cd_lastpos", JSON.stringify(cdLastPos));
+        if (secs > 0) startCooldown(secs, prev, toPos);
+      }
+
+      function stopCooldown() {
+        if (cdTimer) {
+          clearInterval(cdTimer);
+          cdTimer = null;
+        }
+        const bar = document.getElementById("cooldown-bar");
+        const label = document.getElementById("cooldown-label");
+        const tpBtn = document.getElementById("cd-tp-btn");
+        if (bar) bar.style.display = "none";
+        if (tpBtn) {
+          tpBtn.disabled = false;
+          tpBtn.textContent = "▶ 設定此位置";
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // ROAD ROUTING  (OpenRouteService)
+      // ════════════════════════════════════════════════════════════
+      const ORS_API = "https://api.openrouteservice.org/v2/directions";
+      const ORS_KEY = "ors_api_key_v1";
+
+      let routingMode = "manual"; // 'manual' | 'walk' | 'cycle'
+      let orsKeyVal = "";
+
+      // Profile map
+      const ORS_PROFILE = {
+        walk: "foot-walking",
+        cycle: "cycling-regular",
+      };
+
+      function setRoutingMode(m) {
+        routingMode = m;
+        ["manual", "walk", "cycle"].forEach((id) => {
+          const tb = document.getElementById("rmt-" + id);
+          if (tb) tb.classList.toggle("active", id === m);
+        });
+        const sec = document.getElementById("ors-key-section");
+        if (sec) sec.style.display = m !== "manual" ? "" : "none";
+
+        if (m !== "manual") {
+          // Load saved key
+          orsKeyVal = localStorage.getItem(ORS_KEY) || "";
+          const inp = document.getElementById("ors-key");
+          if (inp) inp.value = orsKeyVal;
+          setOrsStatus(
+            orsKeyVal
+              ? "// API key 已載入，點選地圖即可規劃路線"
+              : "// 請輸入 API key",
+            orsKeyVal ? "ok" : "",
+          );
+          // Auto-enable map click + matching speed
+          if (!rcMode) {
+            rcMode = true;
+            document.getElementById("brc").classList.add("active");
+          }
+          if (m === "walk") setSpdPreset("route", 5, 0);
+          if (m === "cycle") setSpdPreset("route", 15, 2);
+        } else {
+          setOrsStatus("", "");
+        }
+        toast(
+          m === "manual"
+            ? "手動點選模式"
+            : m === "walk"
+              ? "步行路線模式"
+              : "騎車路線模式",
+          "info",
+        );
+      }
+
+      function setCdMode(m) {
+        cdMode = m;
+        localStorage.setItem(CD_KEY, m);
+        if (m === "off") stopCooldown();
+        toast(m === "distance" ? "冷卻：依距離自動計算" : "冷卻已關閉", "info");
+      }
+
+      function saveOrsKey() {
+        const val = (document.getElementById("ors-key")?.value || "").trim();
+        if (!val) {
+          setOrsStatus("// 請輸入 API key", "err");
+          return;
+        }
+        orsKeyVal = val;
+        localStorage.setItem(ORS_KEY, val);
+        setOrsStatus("// API key 已儲存 ✓", "ok");
+        toast("API Key 已儲存", "ok");
+      }
+
+      function setOrsStatus(msg, cls = "") {
+        const el = document.getElementById("ors-status");
+        if (!el) return;
+        el.textContent = msg;
+        el.className = "ors-status" + (cls ? " " + cls : "");
+      }
+
+      async function fetchRoadRoute(p1, p2, profile) {
+        /**
+         * Call ORS Directions API between two points.
+         * Returns array of {lat, lng} following the road network.
+         */
+        const url = `${ORS_API}/${profile}`;
+        const body = {
+          coordinates: [
+            [p1.lng, p1.lat],
+            [p2.lng, p2.lat],
+          ],
+          instructions: false,
+          geometry_simplify: false,
+        };
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: orsKeyVal,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err?.error?.message || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const coords = data?.routes?.[0]?.geometry?.coordinates;
+        if (!coords || coords.length < 2) throw new Error("No route returned");
+
+        // ORS returns [lng, lat], convert to {lat, lng}
+        return coords.map(([lng, lat]) => ({ lat, lng, dwell: 0 }));
+      }
+
+      async function addRoadPoint(lat, lng) {
+        /**
+         * Called when user clicks map in walk/cycle mode.
+         * If this is the first point: just add it.
+         * If there's already at least one point: fetch road route
+         * from the last point to this new point, then append all
+         * intermediate road coords.
+         */
+        if (!orsKeyVal) {
+          setOrsStatus("// 請先輸入並儲存 API key", "err");
+          toast("請先輸入 ORS API Key", "err");
+          return;
+        }
+
+        const profile = ORS_PROFILE[routingMode];
+
+        if (rPts.length === 0) {
+          // First point — just add
+          rPts.push({ lat, lng, dwell: 0 });
+          renderRL();
+          renderMap();
+          updateSI();
+          setOrsStatus(`// 起點已設定，再點選地圖新增下一個點`, "ok");
+          return;
+        }
+
+        const last = rPts[rPts.length - 1];
+        setOrsStatus("// 規劃路線中...", "");
+        document.getElementById("ors-status").textContent =
+          "// 規劃道路路線中...";
+
+        try {
+          const roadPts = await fetchRoadRoute(last, { lat, lng }, profile);
+
+          // roadPts includes start point — skip first to avoid duplicate
+          const newPts = roadPts.slice(1);
+          newPts.forEach((p) => rPts.push(p));
+
+          renderRL();
+          renderMap();
+          updateSI();
+
+          const modeName = routingMode === "walk" ? "步行" : "騎車";
+          setOrsStatus(
+            `// ${modeName}路線規劃完成，新增 ${newPts.length} 個路線點`,
+            "ok",
+          );
+          log(`${modeName}路線：新增 ${newPts.length} 點（沿道路）`, "ok");
+          toast(`路線新增 ${newPts.length} 點`, "ok");
+        } catch (e) {
+          setOrsStatus(`// 路線規劃失敗：${e.message}`, "err");
+          log(`ORS 失敗：${e.message}`, "er");
+          toast("路線規劃失敗", "err");
+
+          // Fallback: add as straight-line point
+          rPts.push({ lat, lng, dwell: 0 });
+          renderRL();
+          renderMap();
+          updateSI();
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // BATCH COORDINATE IMPORT
+      // ════════════════════════════════════════════════════════════
+      function parseBatchCoords(raw) {
+        /**
+         * 支援格式：
+         *   34.5230, 134.8696
+         *   34.5230,134.8696
+         *   34.5230 134.8696
+         *   34.5230\t134.8696
+         *   34.5230N 134.8696E  (忽略方位字母)
+         */
+        const lines = raw.trim().split(/\n/);
+        const pts = [],
+          errs = [];
+
+        lines.forEach((line, i) => {
+          const clean = line.trim();
+          if (!clean || clean.startsWith("//") || clean.startsWith("#")) return;
+
+          // 移除方位字母，統一分隔符
+          const normalized = clean
+            .replace(/[NSEW°′″'"]/gi, " ")
+            .replace(/[,;\t]+/g, " ")
+            .trim();
+
+          const parts = normalized.split(/\s+/).filter(Boolean);
+          if (parts.length < 2) {
+            errs.push(`第 ${i + 1} 行：格式錯誤 "${clean}"`);
+            return;
+          }
+
+          const lat = parseFloat(parts[0]);
+          const lng = parseFloat(parts[1]);
+
+          if (isNaN(lat) || isNaN(lng)) {
+            errs.push(`第 ${i + 1} 行：無法解析數字 "${clean}"`);
+            return;
+          }
+          if (lat < -90 || lat > 90) {
+            errs.push(`第 ${i + 1} 行：緯度超出範圍 ${lat}`);
+            return;
+          }
+          if (lng < -180 || lng > 180) {
+            errs.push(`第 ${i + 1} 行：經度超出範圍 ${lng}`);
+            return;
+          }
+
+          pts.push({ lat, lng, dwell: 0 });
+        });
+
+        return { pts, errs };
+      }
+
+      function batchImport() {
+        const raw = document.getElementById("batch-input").value;
+        const resultEl = document.getElementById("batch-result");
+
+        if (!raw.trim()) {
+          resultEl.innerHTML = '<span class="batch-err">// 請輸入座標</span>';
+          return;
+        }
+
+        const { pts, errs } = parseBatchCoords(raw);
+
+        if (errs.length > 0) {
+          resultEl.innerHTML = `<span class="batch-err">// 錯誤：${errs.join(" | ")}</span>`;
+          if (pts.length === 0) return;
+        }
+
+        if (pts.length < 2) {
+          resultEl.innerHTML =
+            '<span class="batch-err">// 至少需要 2 個有效座標</span>';
+          return;
+        }
+
+        // 追加到現有路線點（不清除）
+        const before = rPts.length;
+        pts.forEach((p) => rPts.push(p));
+        renderRL();
+        renderMap();
+        updateSI();
+
+        const msg =
+          before > 0
+            ? `// 新增 ${pts.length} 點（共 ${rPts.length} 點）${errs.length > 0 ? ` · ${errs.length} 行跳過` : ""}`
+            : `// 匯入 ${pts.length} 點${errs.length > 0 ? ` · ${errs.length} 行跳過` : ""}`;
+
+        resultEl.innerHTML = `<span class="batch-ok">${msg}</span>`;
+        log(`批次匯入：${pts.length} 個座標點`, "ok");
+        toast(`匯入 ${pts.length} 點`, "ok");
+
+        // 地圖飛到第一個新點
+        if (pts.length > 0) {
+          map.flyTo([pts[0].lat, pts[0].lng], Math.max(map.getZoom(), 13));
+        }
+      }
+
+      function batchClear() {
+        document.getElementById("batch-input").value = "";
+        document.getElementById("batch-result").innerHTML = "";
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SAVED MODAL
+      // ════════════════════════════════════════════════════════════
+      function openSavedModal() {
+        document.getElementById("saved-modal").classList.add("open");
+        renderSaved();
+      }
+      function closeSavedModal() {
+        document.getElementById("saved-modal").classList.remove("open");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TIMER SYSTEM
+      // ════════════════════════════════════════════════════════════
+      let timers = [];
+      let timerNextId = 0;
+
+      function toggleTimerPanel() {
+        const panel = document.getElementById("timer-panel");
+        const btn = document.getElementById("btn-timer");
+        const isOpen = panel.classList.toggle("open");
+        if (btn) btn.classList.toggle("active", isOpen);
+        if (isOpen) renderTimers();
+      }
+
+      function addTimer() {
+        timers.push({
+          id: timerNextId++,
+          mins: 5,
+          secs: 0,
+          remainMs: 0,
+          running: false,
+          done: false,
+          locIdx: -1,
+          ivId: null,
+        });
+        renderTimers();
+      }
+
+      function deleteTimer(id) {
+        const t = timers.find((x) => x.id === id);
+        if (t?.ivId) clearInterval(t.ivId);
+        timers = timers.filter((x) => x.id !== id);
+        renderTimers();
+      }
+
+      function startTimerById(id) {
+        const t = timers.find((x) => x.id === id);
+        if (!t) return;
+        const total = (t.mins * 60 + t.secs) * 1000;
+        if (total <= 0) {
+          toast("請設定倒數時間", "err");
+          return;
+        }
+        t.remainMs = total;
+        t.running = true;
+        t.done = false;
+        const start = Date.now();
+        const initMs = total;
+
+        t.ivId = setInterval(() => {
+          t.remainMs = Math.max(0, initMs - (Date.now() - start));
+          _updateTimerCard(t);
+          if (t.remainMs <= 0) {
+            clearInterval(t.ivId);
+            t.ivId = null;
+            t.running = false;
+            t.done = true;
+            renderTimers();
+            log(`計時器 #${t.id + 1} 倒數完成`, "ok");
+            toast(`⏱ 計時器 #${t.id + 1} 結束`, "ok");
+          }
+        }, 80);
+        renderTimers();
+      }
+
+      function stopTimerById(id) {
+        const t = timers.find((x) => x.id === id);
+        if (!t) return;
+        if (t.ivId) {
+          clearInterval(t.ivId);
+          t.ivId = null;
+        }
+        t.running = false;
+        t.done = false;
+        renderTimers();
+      }
+
+      function resetTimer(id) {
+        const t = timers.find((x) => x.id === id);
+        if (!t) return;
+        t.done = false;
+        t.remainMs = 0;
+        renderTimers();
+      }
+
+      function _fmtMs(ms) {
+        const total = Math.ceil(ms / 1000);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        if (h > 0)
+          return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+        return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+      }
+
+      function _updateTimerCard(t) {
+        const card = document.getElementById("tc-" + t.id);
+        if (!card) return;
+        const disp = card.querySelector(".tc-display");
+        if (disp) {
+          disp.textContent = _fmtMs(t.remainMs);
+          disp.className =
+            "tc-display" +
+            (t.done ? " tc-done-text" : t.remainMs < 10000 ? " tc-ending" : "");
+        }
+      }
+
+      function renderTimers() {
+        const el = document.getElementById("timer-list");
+        if (!timers.length) {
+          el.innerHTML = '<div class="tc-empty">// 尚無計時器</div>';
+          return;
+        }
+        const saved = loadSaved();
+        el.innerHTML = timers
+          .map((t) => {
+            const displayMs =
+              t.running || t.done ? t.remainMs : (t.mins * 60 + t.secs) * 1000;
+            const locOpts =
+              `<option value="-1">— 無（僅提醒）</option>` +
+              saved
+                .map(
+                  (s, i) =>
+                    `<option value="${i}"${t.locIdx === i ? " selected" : ""}>▸ ${s.name}</option>`,
+                )
+                .join("");
+            const locName =
+              t.locIdx >= 0 && saved[t.locIdx]
+                ? `→ ${saved[t.locIdx].name}`
+                : "// 無連結地點";
+
+            return `<div class="tc${t.running ? " tc-running" : ""}${t.done ? " tc-done" : ""}" id="tc-${t.id}">
+      <div class="tc-toprow">
+        <span class="tc-id">計時器 #${t.id + 1}</span>
+        <button class="tc-del" onclick="deleteTimer(${t.id})" title="刪除">✕</button>
+      </div>
+      <div class="tc-display${t.done ? " tc-done-text" : displayMs < 10000 && t.running ? " tc-ending" : ""}">${_fmtMs(displayMs)}</div>
+      ${t.running || t.done ? `<div class="tc-loc-hint">${t.done ? "// 計時完成" : locName}</div>` : ""}
+      ${
+        !t.running && !t.done
+          ? `
+        <div class="tc-inputs">
+          <div>
+            <label>分鐘</label>
+            <input type="number" min="0" max="999" value="${t.mins}"
+              oninput="(function(el){const tt=timers.find(x=>x.id===${t.id});if(tt)tt.mins=Math.max(0,parseInt(el.value)||0)})(this)"
+              style="text-align:center;font-size:13px;padding:5px">
+          </div>
+          <div>
+            <label>秒</label>
+            <input type="number" min="0" max="59" value="${t.secs}"
+              oninput="(function(el){const tt=timers.find(x=>x.id===${t.id});if(tt)tt.secs=Math.min(59,Math.max(0,parseInt(el.value)||0))})(this)"
+              style="text-align:center;font-size:13px;padding:5px">
+          </div>
+        </div>
+        <div>
+          <label>地點標記</label>
+          <select class="tc-sel" onchange="(function(el){const tt=timers.find(x=>x.id===${t.id});if(tt)tt.locIdx=parseInt(el.value);renderTimers()})(this)">
+            ${locOpts}
+          </select>
+        </div>
+        <button class="btn bs" onclick="startTimerById(${t.id})" style="font-size:9px;letter-spacing:.1em">▶ 開始倒數</button>
+      `
+          : t.done
+            ? `
+        <button class="btn bg" onclick="resetTimer(${t.id})" style="font-size:9px;letter-spacing:.1em">↺ 重設</button>
+      `
+            : `
+        <button class="btn bd" onclick="stopTimerById(${t.id})" style="font-size:9px;letter-spacing:.1em">■ 停止</button>
+      `
+      }
+    </div>`;
+          })
+          .join("");
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // INIT
+      // ════════════════════════════════════════════════════════════
+      _loadSettings();
+      _applyZoom();
+      initMap();
+      renderSaved();
+      // Restore cooldown mode UI
+      (function () {
+        const sel = document.getElementById("cd-mode-sel");
+        if (sel) {
+          sel.value = cdMode;
+          setCdMode(cdMode);
+        }
+      })();
+
+      // Restore cooldown state after page refresh
+      (function () {
+        // Restore last position
+        try {
+          const lp = localStorage.getItem("gps_cd_lastpos");
+          if (lp) cdLastPos = JSON.parse(lp);
+        } catch {}
+
+        // Restore active cooldown if still running
+        try {
+          const state = localStorage.getItem(CD_STATE_KEY);
+          if (!state) return;
+          const { endTime, totalSecs } = JSON.parse(state);
+          const remaining = Math.ceil((endTime - Date.now()) / 1000);
+          if (remaining <= 0) {
+            localStorage.removeItem(CD_STATE_KEY);
+            return;
+          }
+          // Resume cooldown with remaining time
+          cdTotalSecs = totalSecs;
+          cdEndTime = endTime;
+          const bar = document.getElementById("cooldown-bar");
+          const tpBtn = document.getElementById("cd-tp-btn");
+          if (bar) bar.style.display = "flex";
+          if (tpBtn) tpBtn.disabled = true;
+
+          function tick() {
+            const rem = Math.max(0, Math.ceil((cdEndTime - Date.now()) / 1000));
+            const pct = (rem / cdTotalSecs) * 100;
+            const fill = document.getElementById("cooldown-fill");
+            if (fill) fill.style.width = pct + "%";
+            const mm = Math.floor(rem / 60);
+            const ss = String(rem % 60).padStart(2, "0");
+            const btn = document.getElementById("cd-tp-btn");
+            if (btn)
+              btn.textContent =
+                "▶ 冷卻中 " + (mm > 0 ? mm + ":" + ss : rem + "s");
+            if (rem <= 0) {
+              clearInterval(cdTimer);
+              cdTimer = null;
+              if (bar) bar.style.display = "none";
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = "▶ 設定此位置";
+              }
+              localStorage.removeItem(CD_STATE_KEY);
+            }
+          }
+          tick();
+          cdTimer = setInterval(tick, 250);
+          log("冷卻恢復：剩餘 " + remaining + "s", "wa");
+        } catch {}
+      })();
+      log("系統初始化完成", "in");
+      log("// 連接 iPhone → 啟動通道 → 設定位置", "in");
+    </script>
+  </body>
+</html>
