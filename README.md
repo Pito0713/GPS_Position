@@ -183,10 +183,10 @@ http://localhost:7788/ui
 | **GPX 匯入** | 載入 `.gpx` 檔案播放路線 |
 | **批次座標匯入** | 貼上多行座標一次匯入為路線點 |
 | **隨機漫步（Walk）** | 在指定半徑內自然閒逛，方向帶慣性 |
-| **鍵盤控制** | WASD / 方向鍵移動，可調步長，浮動面板 |
-| **計時器** | 多計時器同步執行，可標記已儲存地點 |
-| **儲存地點** | 書籤管理常用座標，modal 獨立顯示 |
-| **系統日誌** | 浮動面板即時顯示操作紀錄 |
+| **鍵盤控制** | WASD / 方向鍵移動，可調步長，浮動面板（啟用時外框發光）|
+| **計時器** | 多計時器同步執行，可標記已儲存地點；右側固定側抽屜 |
+| **書籤地點** | 常用座標書籤管理；自動在地圖顯示 pin + 名稱，點擊可傳送 |
+| **系統日誌** | 底部常駐 drawer，點擊 header 展開 / 收合 |
 | **設定面板** | 字體縮放、API port、地圖預設視角、冷卻參數集中管理 |
 
 ---
@@ -231,18 +231,33 @@ gps_position/
 
 ```
 index.html
-├── <style>             # 所有 CSS（~630 行）
-├── HTML                # 骨架：top-bar, panel, map, modals, float panels
-└── <script>            # 所有 JS（~2,000 行），依功能分區塊：
-    ├── config.js       → 常數 + DEFAULT_SETTINGS
+├── <style>             # 所有 CSS（~820 行）
+├── HTML                # 骨架結構：
+│   ├── #top-bar        → fixed 頂部列（連線控制、書籤、計時器、設定）
+│   ├── #timer-panel    → fixed 右側計時器側抽屜
+│   ├── #saved-modal    → 書籤管理 modal
+│   ├── #settings-modal → 系統設定 modal
+│   └── #app
+│       ├── #panel      → 左側可收合功能面板（傳送/路線/GPX/漫步）
+│       ├── #panel-toggle → ‹/› 收合按鈕
+│       └── #map-wrap
+│           ├── #map            → Leaflet 地圖
+│           ├── #mc             → 地圖浮動控件（含 📌 書籤 pin toggle）
+│           ├── #hud            → 座標 / 狀態 / 速度 / 偽裝 badge
+│           ├── #kb-float       → 鍵盤控制浮動面板（右下）
+│           ├── #log-float      → 系統日誌底部 drawer（底部中央）
+│           └── #rp             → 路線進度條
+└── <script>            # 所有 JS（~3,200 行），依功能分區塊：
+    ├── panel           → 面板收合 togglePanel()
+    ├── config          → 常數 + DEFAULT_SETTINGS
     ├── state           → 全域狀態
     ├── map             → Leaflet 地圖操作
     ├── tunnel          → USB Tunnel 管理
     ├── teleport        → 座標傳送 + 搜尋
-    ├── saved           → 書籤地點
+    ├── saved           → 書籤地點 + 地圖 pins（renderSavedMarkers）
     ├── cooldown        → 冷卻計算
     ├── interpolation   → 路徑插值（純函式）
-    ├── route           → 路線播放
+    ├── route           → 路線播放 + HUD 速度顯示
     ├── gpx             → GPX 解析
     ├── ors             → OpenRouteService
     ├── batch           → 批次匯入
@@ -271,5 +286,26 @@ index.html
 **iPhone 私人資料**：後端僅透過 Apple DVT 協議寫入虛假 GPS 座標，不讀取任何裝置資料（無 UDID、無帳號、無個人資訊）。
 
 ---
+
+---
+
+## UI 佈局概覽
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ #top-bar  ● GPS 定位 · 狀態 · ▶啟動 ■停止 ⚙DDI · 📂書籤 ⏱計時器 · 設定 │
+├──────────┬──────────────────────────────────────┬──────────┤
+│          │                                      │ #timer   │
+│ #panel   │        Leaflet Map                   │  panel   │
+│ (可收合) │  ┌─ #mc ────────────────┐            │ (fixed   │
+│ ‹ / ›   │  │ ◎ ⊕ 📌 ✚ ⌨ LOG      │            │ 右側     │
+│ [傳送]   │  └──────────────────────┘            │ 側抽屜)  │
+│ [路線]   │                                      │          │
+│ [GPX]    │  #hud（座標·狀態·速度·偽裝中）         │          │
+│ [漫步]   │                                      │          │
+├──────────┴──────────────────────────────────────┴──────────┤
+│         #log-float  系統日誌 drawer（底部中央，點擊展開）         │
+└─────────────────────────────────────────────────────────────┘
+```
 
 *GPS Position v2 · iOS 16+ · macOS 13+ · pymobiledevice3*
